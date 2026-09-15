@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import threading
 import time
 from datetime import date
 from pathlib import Path
@@ -37,6 +38,32 @@ if cors_enabled:
 ESP32_IP = os.environ.get("ESP32_IP", "192.168.4.1")
 ESP32_CAPTURE_URL = f"http://{ESP32_IP}/capture"
 ESP32_STREAM_URL = f"http://{ESP32_IP}/stream"
+
+# --- Anti-Freeze / Keep-Alive Daemon for Render ---
+def start_keep_alive():
+    """Periodically sends an external HTTP ping every 10 minutes to prevent Render from freezing."""
+    external_url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("SELF_URL") or os.environ.get("KEEP_ALIVE_URL")
+    if not external_url:
+        print("[KEEP-ALIVE] Notice: Set RENDER_EXTERNAL_URL or SELF_URL in Render to enable automated self-ping.")
+        return
+
+    url = external_url.rstrip("/")
+
+    def loop():
+        time.sleep(45)  # Wait for startup
+        print(f"[KEEP-ALIVE] Anti-freeze monitor running for: {url}")
+        while True:
+            try:
+                time.sleep(600)  # Ping every 10 minutes (Render sleeps after 15 min idle)
+                res = requests.get(f"{url}/ping", timeout=15)
+                print(f"[KEEP-ALIVE] Ping sent to {url}/ping -> HTTP {res.status_code} (Server kept warm!)")
+            except Exception as e:
+                print(f"[KEEP-ALIVE] Ping attempt: {e}")
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+
+start_keep_alive()
 
 BASE_DIR = Path(__file__).parent
 DATASET_DIR = BASE_DIR / "dataset"
@@ -306,6 +333,11 @@ def dataset_stats():
             counts[sub.name] = n
             total += n
     return total, counts
+
+
+@app.route("/ping")
+def ping():
+    return jsonify({"status": "alive", "time": time.time()})
 
 
 @app.route("/health")
