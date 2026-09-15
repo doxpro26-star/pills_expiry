@@ -42,9 +42,8 @@ ESP32_STREAM_URL = f"http://{ESP32_IP}/stream"
 # --- Anti-Freeze / Keep-Alive Daemon for Render ---
 def start_keep_alive():
     """Periodically sends an external HTTP ping every 10 minutes to prevent Render from freezing."""
-    external_url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("SELF_URL") or os.environ.get("KEEP_ALIVE_URL")
+    external_url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("SELF_URL") or os.environ.get("KEEP_ALIVE_URL") or "https://pills-expiry.onrender.com"
     if not external_url:
-        print("[KEEP-ALIVE] Notice: Set RENDER_EXTERNAL_URL or SELF_URL in Render to enable automated self-ping.")
         return
 
     url = external_url.rstrip("/")

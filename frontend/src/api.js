@@ -2,7 +2,7 @@
 // Set VITE_API_URL in Vercel/Netlify environment variables
 // For local dev, uses Vite proxy to http://localhost:5000
 
-export const API_BASE = import.meta.env.VITE_API_URL || ''
+export const API_BASE = (import.meta.env.VITE_API_URL || 'https://pills-expiry.onrender.com').replace(/\/$/, '')
 
 export async function api(path, options = {}) {
   const url = `${API_BASE}${path}`
