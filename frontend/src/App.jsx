@@ -152,14 +152,27 @@ function App() {
             }}
           />
         ) : (
-          <div style={{background:'#000',borderRadius:10,padding:40,color:'#94a3b8',minHeight:200,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:8}}>
+          <div style={{background:'#000',borderRadius:10,padding:40,color:'#94a3b8',minHeight:300,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:10}}>
             <div>📷 Stream unavailable</div>
-            <div className="small" style={{maxWidth:400}}>
-              {isHttps() ? 'HTTPS blocks HTTP stream to ESP32. Allow insecure content or view stream at' : 'Connect to ESP32-CAM_AP WiFi and view stream at'} <a href={esp32StreamHttpUrl()} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>{esp32StreamHttpUrl()}</a>
-              <br/>Proxy: <a href={proxyStreamUrl()} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>{proxyStreamUrl()}</a> (works only if backend is local)
+            <div className="small" style={{maxWidth:520,lineHeight:1.6,textAlign:'left',background:'#1e293b',padding:12,borderRadius:8}}>
+              {isHttps() ? (
+                <>
+                  <b style={{color:'#fbbf24'}}>HTTPS blocks HTTP stream to ESP32 (mixed content).</b><br/>
+                  1) Connect to WiFi <code>ESP32-CAM_AP</code> (pass: 12345678) – you need internet + WiFi at same time (phone mobile data ON works).<br/>
+                  2) Click <a href={esp32StreamHttpUrl()} target="_blank" rel="noreferrer" style={{color:'#7dd3fc',fontWeight:600}}>Open http://192.168.4.1/stream in new tab</a> – this <b>always works</b> (no mixed content in new http tab).<br/>
+                  3) To make it work <b>embedded here</b>: click 🔒 icon in address bar → Site settings → <b>Insecure content: Allow</b> → Reload page → then <b>Retry Direct</b>.<br/>
+                  4) Or use fully HTTP: run backend locally <code>python server/app.py</code> and open <code>http://localhost:5000</code> or <code>http://192.168.4.2:5000</code> – then no block.<br/>
+                </>
+              ) : (
+                <>Connect to WiFi <code>ESP32-CAM_AP</code> then <a href={esp32StreamHttpUrl()} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>{esp32StreamHttpUrl()}</a></>
+              )}
+              <br/><br/>Proxy: <a href={proxyStreamUrl()} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>{proxyStreamUrl()}</a> (only works if backend is LOCAL on ESP32 WiFi, fails on Render cloud – expected).
             </div>
-            <button className="btn secondary" style={{marginTop:8}} onClick={()=>{setStreamError(false); setStreamUrl(esp32StreamHttpUrl())}}>Retry Direct</button>
-            <button className="btn secondary" onClick={()=>{setStreamError(false); setStreamUrl(proxyStreamUrl())}}>Try Proxy</button>
+            <div className="row">
+              <button className="btn secondary" style={{marginTop:4}} onClick={()=>{setStreamError(false); setStreamOk(false); setStreamUrl(esp32StreamHttpUrl())}}>Retry Direct</button>
+              <button className="btn secondary" onClick={()=>{setStreamError(false); setStreamOk(false); setStreamUrl(proxyStreamUrl())}}>Try Proxy</button>
+              <a className="btn primary" href={esp32StreamHttpUrl()} target="_blank" rel="noreferrer">Open Stream (http, no block)</a>
+            </div>
           </div>
         )}
         <p className="small">Live stream from ESP32-CAM (connect to ESP32-CAM_AP WiFi) — Direct: {esp32StreamHttpUrl()} | Proxy: {proxyStreamUrl()} {streamOk ? '✅ Stream loaded' : ''}</p>
