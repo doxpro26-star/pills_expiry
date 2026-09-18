@@ -49,6 +49,10 @@ ESP32_IP = os.environ.get("ESP32_IP", "192.168.4.1")
 ESP32_CAPTURE_URL = f"http://{ESP32_IP}/capture"
 ESP32_STREAM_URL = f"http://{ESP32_IP}/stream"
 IS_CLOUD = bool(os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("RENDER_SERVICE_NAME") or "onrender.com" in (os.environ.get("SELF_URL","") or ""))
+# STA candidates for local network (when ESP32 joins home WiFi, AP 192.168.4.1 not reachable from home WiFi)
+ESP32_CANDIDATES = [ESP32_IP, "192.168.1.7", "esp32cam.local", "192.168.4.1"]
+# dedupe preserve order
+_seen=set(); ESP32_CANDIDATES=[x for x in ESP32_CANDIDATES if not (x in _seen or _seen.add(x))]
 
 # --- Anti-Freeze / Keep-Alive Daemon for Render ---
 def start_keep_alive():
@@ -217,16 +221,25 @@ def predict(pil_img):
 
 
 def fetch_esp32():
-    try:
-        r = requests.get(ESP32_CAPTURE_URL, timeout=7)
-        if r.status_code != 200:
-            return None, f"ESP32 returned {r.status_code} at {ESP32_CAPTURE_URL}. On cloud (Render), backend CANNOT reach 192.168.4.1 - use client-side Upload or client-side ESP32 fetch instead. If running locally, ensure PC is on ESP32-CAM_AP WiFi."
-        return Image.open(io.BytesIO(r.content)).convert("RGB"), None
-    except Exception as e:
-        hint = ""
-        if IS_CLOUD or "onrender" in ESP32_CAPTURE_URL:
-            hint = " (CLOUD DEPLOYMENT: Render cannot reach 192.168.4.1 - ESP32 is a local device on 192.168.4.x hotspot. Browser must fetch ESP32 directly via http://192.168.4.1/capture then POST to /collect_upload or /identify_upload. See frontend smartCollect/smartIdentify.)"
-        return None, f"{e} - connect to WiFi ESP32-CAM_AP (192.168.4.1) - tried {ESP32_CAPTURE_URL}{hint}"
+    # Try all candidates (STA 192.168.1.7, mDNS, AP) - local PC can reach STA when on same home WiFi
+    last_err = None
+    for cand in ESP32_CANDIDATES:
+        url = f"http://{cand}/capture"
+        try:
+            r = requests.get(url, timeout=4)
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code} at {url}"
+                continue
+            return Image.open(io.BytesIO(r.content)).convert("RGB"), None
+        except Exception as e:
+            last_err = f"{e} at {url}"
+            continue
+    hint = ""
+    if IS_CLOUD:
+        hint = " (CLOUD: Render cannot reach local 192.168.x.x - use browser client-side fetch)"
+    else:
+        hint = f" (LOCAL: tried {ESP32_CANDIDATES} - ensure PC on same WiFi as ESP32 STA 192.168.1.7 or AP 192.168.4.1; set ESP32_IP env to STA IP)"
+    return None, f"{last_err}{hint}"
 
 
 HTML_PAGE = """
@@ -940,6 +953,8 @@ def ping():
 @app.route("/health")
 def health():
     total, counts = dataset_stats()
+    # Probe STA quickly for hint
+    sta_hint = "STA 192.168.1.7" if any("192.168.1" in c for c in ESP32_CANDIDATES) else ""
     return jsonify({
         "model_loaded": model is not None,
         "classes": classes,
@@ -949,8 +964,9 @@ def health():
         "esp32": ESP32_IP,
         "esp32_url": ESP32_CAPTURE_URL,
         "esp32_stream": ESP32_STREAM_URL,
+        "esp32_candidates": ESP32_CANDIDATES,
         "is_cloud": IS_CLOUD,
-        "hint": "ESP32 at 192.168.4.1 is LOCAL. Cloud backend cannot reach it. Frontend must do client-side fetch(http://192.168.4.1/capture) + POST to /identify_upload when on https://medicine-expiry.doxpro26.workers.dev" if IS_CLOUD else "Local backend can reach ESP32 if PC is on ESP32-CAM_AP",
+        "hint": f"Local: trying {ESP32_CANDIDATES}. STA is http://192.168.1.7 (Airtel). Set ESP32_IP=192.168.1.7 or open http://192.168.1.7/stream. Cloud: use browser fetch http://192.168.1.7/capture." if not IS_CLOUD else "Cloud cannot reach local - browser must fetch directly",
         "today": date.today().isoformat(),
     })
 
@@ -1027,29 +1043,34 @@ def reload_model():
 
 @app.route("/proxy/stream")
 def proxy_stream():
-    # Only works when backend is LOCAL and on ESP32-CAM_AP network. On Render cloud, will always fail.
-    try:
-        r = requests.get(ESP32_STREAM_URL, stream=True, timeout=5)
-        return Response(r.iter_content(chunk_size=1024), content_type=r.headers.get("Content-Type", "multipart/x-mixed-replace; boundary=frame"),
-                        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
-    except Exception as e:
-        return jsonify({"error": "ESP32 unreachable from backend", "details": str(e),
-                        "hint": "Backend at {} cannot reach {}. On Render cloud this always fails - use direct http://{}/stream in browser while on ESP32-CAM_AP WiFi. Local backend works if PC is on ESP32-CAM_AP.".format(ESP32_IP, ESP32_STREAM_URL, ESP32_IP)}), 502
+    for cand in ESP32_CANDIDATES:
+        url = f"http://{cand}/stream"
+        try:
+            r = requests.get(url, stream=True, timeout=5)
+            return Response(r.iter_content(chunk_size=1024), content_type=r.headers.get("Content-Type", "multipart/x-mixed-replace; boundary=frame"),
+                            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"})
+        except Exception:
+            continue
+    return jsonify({"error": "ESP32 unreachable from backend", "details": f"tried {ESP32_CANDIDATES}",
+                    "hint": "Local backend tried AP and STA (192.168.1.7, esp32cam.local). Ensure PC on same WiFi as ESP32 STA. Set ESP32_IP=192.168.1.7 env if needed. On Render cloud proxy always fails - use direct http://192.168.1.7/stream."}), 502
 
 
 @app.route("/esp32/<path:subpath>")
 def esp32_proxy(subpath):
-    try:
-        url = f"http://{ESP32_IP}/{subpath}"
+    last = None
+    for cand in ESP32_CANDIDATES:
+        url = f"http://{cand}/{subpath}"
         if request.query_string:
             url += "?" + request.query_string.decode()
-        r = requests.get(url, timeout=5)
-        # Preserve CORS
-        resp = Response(r.content, content_type=r.headers.get("Content-Type", "application/octet-stream"), status=r.status_code)
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        return resp
-    except Exception as e:
-        return jsonify({"error": str(e), "hint": f"Backend cannot reach http://{ESP32_IP}/{subpath}. On cloud this always fails - browser should fetch directly from ESP32 instead."}), 502
+        try:
+            r = requests.get(url, timeout=5)
+            resp = Response(r.content, content_type=r.headers.get("Content-Type", "application/octet-stream"), status=r.status_code)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
+        except Exception as e:
+            last = str(e)
+            continue
+    return jsonify({"error": last, "hint": f"Backend tried {ESP32_CANDIDATES} for /{subpath}. On cloud fails - browser fetch directly http://192.168.1.7/{subpath} or esp32cam.local."}), 502
 
 @app.route("/esp32/<path:subpath>", methods=["OPTIONS"])
 def esp32_proxy_options(subpath):
