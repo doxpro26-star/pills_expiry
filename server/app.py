@@ -931,6 +931,91 @@ window.identify = async function(src){
 def index():
     return render_template_string(HTML_PAGE)
 
+STUDIO_HTML = """
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Studio - Direct STA 192.168.1.7</title>
+<style>
+  *{box-sizing:border-box} body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#f8fafc;color:#0f172a;margin:0}
+  header{background:#fff;border-bottom:1px solid #e2e8f0;padding:14px 20px;display:flex;align-items:center;gap:10px;position:sticky;top:0}
+  .mark{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#0e7490,#06b6d4);display:grid;place-items:center;color:#fff;font-size:18px}
+  main{max-width:900px;margin:0 auto;padding:18px 14px}
+  .card{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:16px;margin:14px 0;box-shadow:0 1px 3px rgba(15,23,42,.08)}
+  input{padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:10px;width:100%}
+  input:focus{outline:none;border-color:#0e7490;box-shadow:0 0 0 4px rgba(14,116,144,.12)}
+  .btn{padding:10px 16px;border-radius:999px;border:1px solid transparent;font-weight:600;cursor:pointer}
+  .primary{background:#0e7490;color:#fff} .secondary{background:#fff;border-color:#e2e8f0}
+  #stream{width:100%;border-radius:12px;background:#000;min-height:340px;object-fit:cover;display:block}
+  .small{font-size:.78rem;color:#64748b} code{background:#f1f5f9;padding:2px 6px;border-radius:6px;border:1px solid #e2e8f0}
+</style></head><body>
+<header><div class="mark">💊</div><div><b>Studio — Direct STA</b><div class="small">Hardcoded 192.168.1.7 · Airtel_priy_0001 · no hotspot switch</div></div>
+<a href="/" style="margin-left:auto" class="btn secondary">MediScan</a></header>
+<main>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="padding:10px 14px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:8px;font-size:.75rem;font-weight:700;color:#0e7490;letter-spacing:.04em">● LIVE — http://192.168.1.7/stream <span id="ok" style="margin-left:auto;color:#94a3b8">loading…</span></div>
+    <img id="stream" src="http://192.168.1.7/stream" alt="ESP32" onload="document.getElementById('ok').textContent='● live';document.getElementById('ok').style.color='#0d9488'" onerror="document.getElementById('ok').textContent='● retrying…'; setTimeout(()=>{document.getElementById('stream').src='http://192.168.1.7/stream?_t='+Date.now()},1500)">
+    <div style="padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn secondary" href="http://192.168.1.7/stream" target="_blank">Open direct</a>
+      <a class="btn secondary" href="http://192.168.1.7/capture" target="_blank">Test capture</a>
+      <a class="btn secondary" href="http://192.168.1.7/wifi" target="_blank">WiFi Setup</a>
+      <span class="small" style="align-self:center">If black, PC not on Airtel_priy_0001</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 10px">1 — Collect from Studio</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <input id="tablet" placeholder="Tablet e.g. Crocin" style="flex:1">
+      <input id="expiry" placeholder="MM-YYYY e.g. 08-2029" style="max-width:160px">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <button class="btn primary" onclick="collectStudio()">📷 Capture from 192.168.1.7 & Save</button>
+      <label class="btn secondary">📁 Upload & Save <input type="file" id="up" accept="image/*" style="display:none" onchange="upload()"></label>
+    </div>
+    <div id="msg" class="small" style="margin-top:10px;white-space:pre-wrap"></div>
+    <p class="small" style="margin-top:8">Saves to <code>dataset/Tablet__MM-YYYY/</code> · needs 30-50 per batch</p>
+  </div>
+
+  <div class="card">
+    <h3>2 — Train</h3>
+    <pre class="small" style="background:#f8fafc;padding:12px;border-radius:10px;border:1px solid #e2e8f0">pip install -r requirements.txt
+python train_tablets.py --data dataset --epochs 20
+# creates tablet_classifier.pth + classes.json -> Restart server</pre>
+  </div>
+</main>
+<script>
+async function collectStudio(){
+  let t=document.getElementById('tablet').value.trim(), e=document.getElementById('expiry').value.trim();
+  if(!t||!e){ document.getElementById('msg').textContent='Enter tablet + expiry'; return }
+  if(!/^(0[1-9]|1[0-2])-(20\\d{2})$/.test(e)){ document.getElementById('msg').textContent='Expiry MM-YYYY'; return }
+  document.getElementById('msg').textContent='⏳ Capturing from http://192.168.1.7/capture …';
+  try{
+    let r=await fetch('http://192.168.1.7/capture',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    let b=await r.blob();
+    let fd=new FormData(); fd.append('image', new File([b],'cap.jpg',{type:'image/jpeg'})); fd.append('tablet',t); fd.append('expiry',e);
+    let res=await fetch('/collect_upload',{method:'POST',body:fd});
+    let j=await res.json();
+    if(j.error) throw new Error(j.error);
+    document.getElementById('msg').textContent='✅ Saved '+j.saved_as+' · '+j.count_in_class+' in batch · '+j.total_images+' total';
+  }catch(err){
+    document.getElementById('msg').textContent='❌ '+err.message+' — Try Upload or open http://192.168.1.7/capture in new tab to test';
+  }
+}
+async function upload(){
+  let f=document.getElementById('up').files[0]; if(!f) return;
+  let t=document.getElementById('tablet').value.trim(), e=document.getElementById('expiry').value.trim();
+  if(!t||!e){ document.getElementById('msg').textContent='Enter tablet + expiry'; return }
+  let fd=new FormData(); fd.append('image',f); fd.append('tablet',t); fd.append('expiry',e);
+  let r=await fetch('/collect_upload',{method:'POST',body:fd}); let j=await r.json();
+  document.getElementById('msg').textContent = j.error ? '❌ '+j.error : '✅ Uploaded '+j.saved_as;
+}
+</script>
+</body></html>
+"""
+@app.route("/studio")
+def studio():
+    return render_template_string(STUDIO_HTML)
+
 
 def dataset_stats():
     if not DATASET_DIR.exists():
