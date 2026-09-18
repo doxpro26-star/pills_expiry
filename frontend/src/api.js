@@ -44,42 +44,71 @@ export async function api(path, options = {}) {
 // ---------- ESP32 Direct Fetch (Client-Side) ----------
 // This is the CORRECT way for cloud deployments: browser fetches ESP32 directly
 // (when connected to ESP32-CAM_AP) then uploads blob to backend
+async function fetchEsp32BlobViaImage(url) {
+  // Fallback for HTTPS mixed-content: use <img> passive load + canvas (works even when fetch blocked if ESP32 sends CORS *)
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    const timeout = setTimeout(() => { img.src = ''; reject(new Error('Image load timeout (4s)')) }, 6000)
+    img.onload = () => {
+      clearTimeout(timeout)
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.naturalWidth || img.width
+        canvas.height = img.naturalHeight || img.height
+        if (canvas.width === 0 || canvas.height === 0) throw new Error('Image has zero size')
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        canvas.toBlob((blob) => {
+          if (!blob) reject(new Error('Canvas toBlob failed (CORS taint?)'))
+          else if (blob.size < 100) reject(new Error('Empty image from canvas'))
+          else resolve(blob)
+        }, 'image/jpeg', 0.92)
+      } catch (err) {
+        reject(new Error('Canvas capture failed: ' + err.message))
+      }
+    }
+    img.onerror = () => {
+      clearTimeout(timeout)
+      reject(new Error('Image load failed - ensure ESP32 is reachable and CORS enabled'))
+    }
+    img.src = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`
+  })
+}
+
 export async function fetchEsp32Blob(endpoint = '/capture') {
   const base = getEsp32Base()
   const url = `${base}${endpoint}`
   
-  let lastError = null
-  // Try direct fetch with CORS
+  // Try direct fetch with CORS first
   try {
-    // Use no-cache to get fresh image
     const res = await fetch(url, {
       method: 'GET',
       cache: 'no-store',
-      // mode cors is default - ESP32 sends Access-Control-Allow-Origin: *
     })
     if (!res.ok) throw new Error(`ESP32 returned HTTP ${res.status}`)
     const blob = await res.blob()
     if (blob.size < 100) throw new Error('ESP32 returned empty image')
-    // Verify it's an image
-    if (!blob.type.includes('image') && endpoint.includes('capture')) {
-      // Some ESP32 firmware returns image/jpeg correctly, check size instead
-    }
     return blob
   } catch (e) {
-    lastError = e
-    // Provide helpful error based on context
     const isMixedContent = isHttps() && url.startsWith('http://')
     const msg = e.message || String(e)
     
-    // Detect mixed content blocking (https page trying to fetch http:// local IP)
-    if (isMixedContent && (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed'))) {
-      throw new Error(
-        `Mixed content blocked: Cloud site is HTTPS but ESP32 is HTTP (${url}). ` +
-        `Browsers block HTTPS→HTTP requests to local IPs. ` +
-        `Solutions: (1) Click "Allow insecure content" in browser address bar, ` +
-        `(2) Use Upload button instead, or (3) Run backend locally at http://localhost:5000 and set VITE_API_URL to it. ` +
-        `You must be connected to WiFi ESP32-CAM_AP (password: 12345678).`
-      )
+    // On HTTPS mixed-content block, try <img> fallback (passive content may still load)
+    if (isMixedContent && (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed') || msg.includes('fetch'))) {
+      try {
+        console.warn('Fetch blocked (mixed content), trying <img> fallback for', url)
+        const blob = await fetchEsp32BlobViaImage(url)
+        console.log('Image fallback succeeded for', url, 'size', blob.size)
+        return blob
+      } catch (imgErr) {
+        throw new Error(
+          `Mixed content blocked (HTTPS→HTTP): ${url} – Browser blocks fetch to local IP. Image fallback also failed: ${imgErr.message}. ` +
+          `Solutions: (1) Allow insecure content: click 🔒 in address bar → Site settings → Insecure content: Allow → Reload, ` +
+          `(2) Use Upload button, or (3) Run backend locally at http://localhost:5000. ` +
+          `You must be on WiFi ESP32-CAM_AP (12345678). Your stream image may still show – that's passive content, but JS capture needs insecure allow or fallback.`
+        )
+      }
     }
     if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
       throw new Error(
@@ -107,16 +136,49 @@ export async function identifyEsp32ClientSide() {
   return identifyUpload(file)
 }
 
-// Check ESP32 connectivity from browser
+// Check ESP32 connectivity from browser - tries fetch, then proxy, then image load for HTTPS mixed-content
+async function checkEsp32ViaImage() {
+  const base = getEsp32Base()
+  return new Promise((resolve) => {
+    const img = new Image()
+    const timeout = setTimeout(() => { img.src = ''; resolve(false) }, 4000)
+    img.onload = () => { clearTimeout(timeout); resolve(true) }
+    img.onerror = () => { clearTimeout(timeout); resolve(false) }
+    // Use /capture with cache-bust as test image - ESP32 returns JPEG
+    img.src = `${base}/capture?_t=${Date.now()}`
+  })
+}
+
 export async function checkEsp32Status() {
   const base = getEsp32Base()
+  // 1) Try direct JS fetch (works on http:// local or when mixed-content allowed)
   try {
     const res = await fetch(`${base}/status`, { cache: 'no-store' })
-    if (!res.ok) return { online: false, error: `HTTP ${res.status}` }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    return { online: true, data, base }
+    return { online: true, via: 'fetch', data, base }
   } catch (e) {
-    return { online: false, error: e.message, base, httpsBlocked: isHttps() }
+    const msg = e.message || String(e)
+    const httpsBlocked = isHttps()
+    const isFetchBlocked = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed')
+
+    // 2) If HTTPS mixed-content block, try backend proxy (only works if backend is LOCAL - on Render it will also fail)
+    if (httpsBlocked && isFetchBlocked) {
+      try {
+        const pr = await fetch(`${API_BASE}/esp32/status`, { cache: 'no-store' })
+        if (pr.ok) {
+          const data = await pr.json()
+          return { online: true, via: 'proxy', data, base }
+        }
+      } catch {}
+      // 3) Passive mixed-content check via <img> - browsers allow <img http> on https as passive content even when fetch is blocked
+      const imgOk = await checkEsp32ViaImage()
+      if (imgOk) {
+        return { online: true, via: 'image', streamWorks: true, base, warning: 'JS fetch blocked by HTTPS→HTTP (mixed content) but stream image loads - allow insecure content for Capture/Identify JS fetch' }
+      }
+      return { online: false, error: 'Failed to fetch', base, httpsBlocked: true, imgCheck: imgOk, hint: 'Browser blocks HTTPS→HTTP fetch. Allow insecure content or use http://localhost:5000 or Upload buttons.' }
+    }
+    return { online: false, error: msg, base, httpsBlocked }
   }
 }
 

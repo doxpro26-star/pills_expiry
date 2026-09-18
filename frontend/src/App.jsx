@@ -13,6 +13,7 @@ function App() {
   const [health, setHealth] = useState(null)
   const [streamUrl, setStreamUrl] = useState('')
   const [streamError, setStreamError] = useState(false)
+  const [streamOk, setStreamOk] = useState(false)
   const [esp32Status, setEsp32Status] = useState(null)
   const [esp32IpEdit, setEsp32IpEdit] = useState(getEsp32Ip())
   const [loading, setLoading] = useState(false)
@@ -41,15 +42,10 @@ function App() {
     return () => { clearInterval(interval); clearInterval(espInterval) }
   }, [fetchHealth, checkEsp32])
 
-  // Initialize stream: try direct ESP32 http first, fallback to proxy
+  // Initialize stream: always try direct ESP32 http first (passive mixed content may still load on HTTPS), fallback to proxy
   useEffect(() => {
-    // Direct http stream is preferred when browser can reach ESP32
-    // On HTTPS cloud sites, http stream will be blocked -> use proxy
-    if (isHttps()) {
-      setStreamUrl(proxyStreamUrl())
-    } else {
-      setStreamUrl(esp32StreamHttpUrl())
-    }
+    // Direct http stream works when on ESP32-CAM_AP; even on HTTPS, <img> passive content may load if browser allows
+    setStreamUrl(esp32StreamHttpUrl())
   }, [])
 
   const handleIdentify = async (mode, file) => {
@@ -83,8 +79,13 @@ function App() {
 
   const handleSaveEsp32Ip = () => {
     const ip = esp32IpEdit.trim().replace(/^https?:\/\//,'').replace(/\/.*$/,'')
-    if (ip) { setEsp32Ip(ip); setEsp32IpEdit(ip); setEsp32Status(null); checkEsp32(); setStreamUrl(`http://${ip}/stream`); setStreamError(false) }
+    if (ip) { setEsp32Ip(ip); setEsp32IpEdit(ip); setEsp32Status(null); setStreamOk(false); checkEsp32(); setStreamUrl(`http://${ip}/stream`); setStreamError(false) }
   }
+
+  // Derived ESP32 banner state: stream image loading proves ESP32 reachable even when JS fetch blocked by HTTPS
+  const isEspFetchOnline = esp32Status?.online && esp32Status?.via !== 'image'
+  const isEspStreamOnline = streamOk || esp32Status?.via === 'image' || esp32Status?.streamWorks
+  const isEspOnline = esp32Status?.online
 
   return (
     <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
@@ -92,31 +93,41 @@ function App() {
 
       {/* ESP32 Connection Banner */}
       <div style={{
-        background: esp32Status?.online ? '#0f3d1a' : isHttps() ? '#422006' : '#1e293b',
-        border: `1px solid ${esp32Status?.online ? '#16a34a' : isHttps() ? '#d97706' : '#334155'}`,
+        background: isEspOnline ? '#0f3d1a' : isEspStreamOnline ? '#422006' : isHttps() ? '#422006' : '#1e293b',
+        border: `1px solid ${isEspOnline ? '#16a34a' : isEspStreamOnline ? '#d97706' : isHttps() ? '#d97706' : '#334155'}`,
         borderRadius: 8, padding: '10px 14px', marginBottom: 12, textAlign:'left', fontSize:13, lineHeight:1.5
       }}>
         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',justifyContent:'space-between'}}>
           <span>
-            {esp32Status?.online ? '🟢' : esp32Status === null ? '🟡' : '🔴'} ESP32: {esp32Status?.online ? `Online at ${esp32Status.base}` : esp32Status ? `Offline (${esp32Status.error})` : 'Checking...'}
-            {esp32Status?.httpsBlocked && !esp32Status?.online && <span style={{color:'#fbbf24'}}> — HTTPS blocks HTTP to local IP</span>}
+            {isEspOnline ? '🟢' : isEspStreamOnline ? '🟡' : esp32Status === null ? '🟡' : '🔴'} ESP32: {isEspOnline ? `Online at ${esp32Status.base} via ${esp32Status.via}` : isEspStreamOnline ? `Stream Online (JS fetch blocked by HTTPS)` : esp32Status ? `Offline (${esp32Status.error})` : 'Checking...'}
+            {isEspStreamOnline && !isEspFetchOnline && <span style={{color:'#fbbf24'}}> — Stream image works, fetch needs insecure allow</span>}
           </span>
           <button className="btn secondary" style={{padding:'4px 10px',fontSize:12}} onClick={checkEsp32}>↻ Test ESP32</button>
         </div>
-        {isHttps() && (
+        {isEspOnline && esp32Status?.via === 'image' && (
+          <div style={{marginTop:6,color:'#fde68a',fontSize:11}}>
+            🟡 Stream image loads (passive mixed content) – JS fetch for Capture/Identify still blocked. To enable buttons: 🔒 icon → Site settings → Insecure content: Allow → Reload. Or use Upload buttons. Stream proves ESP32 is reachable.
+          </div>
+        )}
+        {isEspStreamOnline && !isEspFetchOnline && esp32Status?.via !== 'image' && (
+          <div style={{marginTop:6,color:'#fde68a',fontSize:11}}>
+            🟡 Stream OK but status fetch failed – allow insecure content to make Capture buttons work.
+          </div>
+        )}
+        {isHttps() && !isEspOnline && !isEspStreamOnline && (
           <div style={{marginTop:6,color:'#fbbf24',fontSize:11}}>
             ⚠️ Cloud site is HTTPS, ESP32 is HTTP (http://{getEsp32Ip()}). Browsers block mixed content. → Allow insecure content in address bar (🔒 icon → Site settings → Insecure content: Allow) OR use Upload buttons OR run backend locally on http://localhost:5000
           </div>
         )}
-        {!esp32Status?.online && (
+        {!isEspOnline && (
           <div style={{marginTop:4,color:'#94a3b8',fontSize:11}}>
-            Connect to WiFi <code>ESP32-CAM_AP</code> (pass: 12345678) then test again. Direct: <a href={getEsp32Base()+"/status"} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>http://{getEsp32Ip()}/status</a>
+            {isEspStreamOnline ? '✅ Stream works! ' : ''}Connect to WiFi <code>ESP32-CAM_AP</code> (pass: 12345678) then test again. Direct: <a href={getEsp32Base()+"/status"} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>http://{getEsp32Ip()}/status</a> | <a href={getEsp32Base()+"/capture"} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>/capture</a>
           </div>
         )}
         <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
           <input value={esp32IpEdit} onChange={e=>setEsp32IpEdit(e.target.value)} placeholder="192.168.4.1" style={{maxWidth:160,padding:'6px 8px',fontSize:12}} />
           <button className="btn secondary" style={{padding:'6px 12px',fontSize:12}} onClick={handleSaveEsp32Ip}>Save IP</button>
-          <span className="small" style={{fontSize:10}}>Current: {getEsp32Base()}</span>
+          <span className="small" style={{fontSize:10}}>Current: {getEsp32Base()} {isEspStreamOnline ? '| Stream OK' : ''} {isHttps() ? '| HTTPS' : '| HTTP'}</span>
         </div>
       </div>
       
@@ -127,15 +138,17 @@ function App() {
             src={streamUrl} 
             alt="ESP32 Stream" 
             className="stream-img"
+            onLoad={() => setStreamOk(true)}
             onError={() => {
-              // Fallback chain: if direct fails, try proxy; if proxy fails, show error
-              if (streamUrl === esp32StreamHttpUrl() && !isHttps()) {
+              // Fallback chain: direct http -> proxy https -> error
+              if (streamUrl === esp32StreamHttpUrl()) {
                 setStreamUrl(proxyStreamUrl())
-              } else if (streamUrl === proxyStreamUrl() && !isHttps()) {
-                setStreamUrl(esp32StreamHttpUrl())
+              } else if (streamUrl === proxyStreamUrl()) {
+                setStreamError(true)
               } else {
                 setStreamError(true)
               }
+              setStreamOk(false)
             }}
           />
         ) : (
@@ -149,10 +162,10 @@ function App() {
             <button className="btn secondary" onClick={()=>{setStreamError(false); setStreamUrl(proxyStreamUrl())}}>Try Proxy</button>
           </div>
         )}
-        <p className="small">Live stream from ESP32-CAM (connect to ESP32-CAM_AP WiFi) — Direct: {esp32StreamHttpUrl()} | Proxy: {proxyStreamUrl()}</p>
+        <p className="small">Live stream from ESP32-CAM (connect to ESP32-CAM_AP WiFi) — Direct: {esp32StreamHttpUrl()} | Proxy: {proxyStreamUrl()} {streamOk ? '✅ Stream loaded' : ''}</p>
         <div className="row" style={{justifyContent:'center'}}>
-          <button className="btn secondary" style={{fontSize:12,padding:'6px 10px'}} onClick={()=>{setStreamError(false); setStreamUrl(esp32StreamHttpUrl())}}>Direct Stream</button>
-          <button className="btn secondary" style={{fontSize:12,padding:'6px 10px'}} onClick={()=>{setStreamError(false); setStreamUrl(proxyStreamUrl())}}>Proxy Stream</button>
+          <button className="btn secondary" style={{fontSize:12,padding:'6px 10px'}} onClick={()=>{setStreamError(false); setStreamOk(false); setStreamUrl(esp32StreamHttpUrl())}}>Direct Stream</button>
+          <button className="btn secondary" style={{fontSize:12,padding:'6px 10px'}} onClick={()=>{setStreamError(false); setStreamOk(false); setStreamUrl(proxyStreamUrl())}}>Proxy Stream</button>
           <a className="btn secondary" style={{fontSize:12,padding:'6px 10px',textDecoration:'none'}} href={esp32StreamHttpUrl()} target="_blank" rel="noreferrer">Open ESP32 Stream</a>
         </div>
       </div>
