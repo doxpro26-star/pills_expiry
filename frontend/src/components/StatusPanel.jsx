@@ -11,6 +11,8 @@ export default function StatusPanel({ health, onReload }) {
 
   const isTrained = health.model_loaded && health.classes.length > 0
   const totalImages = health.dataset_images || 0
+  const isCloud = health.is_cloud
+  const esp32Url = health.esp32_url || `http://${health.esp32}/capture`
 
   return (
     <div className="card">
@@ -48,6 +50,13 @@ export default function StatusPanel({ health, onReload }) {
         </div>
       )}
       <button className="btn secondary" onClick={onReload} style={{marginTop: 12}}>🔄 Reload Model</button>
+      {isCloud && (
+        <div style={{marginTop:12, padding:10, background:'#422006', borderRadius:6, color:'#fbbf24', fontSize:11, lineHeight:1.6}}>
+          ☁️ Cloud backend cannot directly reach ESP32 at {esp32Url} (192.168.4.x is local hotspot).<br/>
+          Frontend uses <b>client-side fetch</b>: browser (on ESP32-CAM_AP WiFi) fetches <code>http://192.168.4.1/capture</code> then uploads to <code>/collect_upload</code> / <code>/identify_upload</code>. If browser blocks (HTTPS→HTTP mixed content), allow insecure content or use Upload buttons.
+        </div>
+      )}
+      {health.hint && <div className="small" style={{marginTop:8, color:'#94a3b8'}}>{health.hint}</div>}
     </div>
   )
 }

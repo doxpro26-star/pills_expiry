@@ -4,11 +4,18 @@ export default function IdentifyPanel({ onIdentify, loading, error }) {
   const [result, setResult] = useState(null)
 
   const handleEsp32 = async () => {
+    setResult({ loading: true })
     try {
       const res = await onIdentify('esp32')
       setResult(res)
     } catch (e) {
-      setResult({ error: e.message })
+      const isMixed = e.message.includes('Mixed content')
+      const hint = isMixed
+        ? ' Browser blocks HTTPS→HTTP. Allow insecure content or use Upload, or run backend locally.'
+        : e.message.includes('Cannot reach')
+          ? ' Ensure WiFi ESP32-CAM_AP connected and ESP32 online at http://192.168.4.1/status'
+          : ''
+      setResult({ error: e.message + hint })
     }
   }
 
@@ -34,7 +41,17 @@ export default function IdentifyPanel({ onIdentify, loading, error }) {
             <input type="file" accept="image/*" style={{display:'none'}} onChange={handleUpload} />
           </label>
         </div>
-        <p className="small">Model must be trained first (see Train panel)</p>
+        <p className="small">Model must be trained first (see Train panel)<br/>ESP32 mode: browser fetches http://192.168.4.1/capture → uploads to backend for inference. Needs ESP32-CAM_AP WiFi.</p>
+      </div>
+    )
+  }
+
+  if (result.loading) {
+    return (
+      <div className="card">
+        <h3>Result</h3>
+        <div style={{color:'#facc15'}}>⏳ Capturing from ESP32 & analysing...</div>
+        <div className="small">Fetching http://192.168.4.1/capture in browser, then sending to backend.</div>
       </div>
     )
   }
@@ -43,7 +60,8 @@ export default function IdentifyPanel({ onIdentify, loading, error }) {
     return (
       <div className="card">
         <h3>Result</h3>
-        <div style={{color:'#f87171'}}>❌ Error: {result.error}</div>
+        <div style={{color:'#f87171', whiteSpace:'pre-wrap', wordBreak:'break-word', background:'#450a0a', padding:10, borderRadius:6, fontSize:13}}>❌ Error: {result.error}</div>
+        <div style={{marginTop:8}} className="small">Try: (1) Connect to ESP32-CAM_AP, (2) Open <a href="http://192.168.4.1/capture" target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>http://192.168.4.1/capture</a> to test, (3) Use Upload button instead, (4) On HTTPS cloud site, allow insecure content.</div>
         <button className="btn secondary" onClick={() => setResult(null)}>Try Again</button>
       </div>
     )

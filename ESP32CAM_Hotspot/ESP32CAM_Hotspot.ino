@@ -88,8 +88,17 @@ void handleStatus() {
   server.send(200, "application/json", json);
 }
 
-void handleCapture() {
+void handleOptions() {
   handleCors();
+  server.send(204, "text/plain", "");
+}
+
+void handleCapture() {
+  // Handle CORS preflight
+  if (server.method() == HTTP_OPTIONS) { handleOptions(); return; }
+  handleCors();
+  server.sendHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  server.sendHeader("Cache-Control", "no-cache, no-store");
   // Take HIGH-RES photo (UXGA) even though stream is SVGA for speed
   sensor_t * s = esp_camera_sensor_get();
   bool switched = false;
@@ -105,7 +114,10 @@ void handleCapture() {
     return;
   }
   server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Cross-Origin-Resource-Policy", "cross-origin");
   server.sendHeader("Content-Disposition", "inline; filename=capture.jpg");
+  server.sendHeader("Cache-Control", "no-cache");
   server.setContentLength(fb->len);
   server.send(200, "image/jpeg", "");
   WiFiClient client = server.client();
@@ -121,7 +133,11 @@ void handleCapture() {
 void handleStream() {
   WiFiClient client = server.client();
   String response = "HTTP/1.1 200 OK\r\n";
-  response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
+  response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n";
+  response += "Access-Control-Allow-Origin: *\r\n";
+  response += "Access-Control-Allow-Methods: GET, OPTIONS\r\n";
+  response += "Cross-Origin-Resource-Policy: cross-origin\r\n";
+  response += "Cross-Origin-Embedder-Policy: unsafe-none\r\n\r\n";
   server.sendContent(response);
 
   while (client.connected()) {
@@ -265,12 +281,19 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/capture", HTTP_GET, handleCapture);
-  server.on("/capture", HTTP_OPTIONS, [](){ handleCors(); server.send(200,"text/plain",""); });
-  server.on("/stream", handleStream);
+  server.on("/capture", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
+  server.on("/stream", HTTP_GET, handleStream);
+  server.on("/stream", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
   server.on("/flash", handleFlash);
+  server.on("/flash", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
   server.on("/res", handleResolution);
   server.on("/status", handleStatus);
-  server.onNotFound(handleRoot);
+  server.on("/status", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
+  // CORS preflight catch-all
+  server.onNotFound([](){
+    if (server.method() == HTTP_OPTIONS) { handleCors(); server.send(204,"text/plain",""); return; }
+    handleRoot();
+  });
 
   server.begin();
   Serial.println("HTTP server started");

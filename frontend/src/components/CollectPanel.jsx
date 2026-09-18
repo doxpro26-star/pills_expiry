@@ -14,11 +14,18 @@ export default function CollectPanel({ onCollect, loading, error }) {
   const handleEsp32 = async () => {
     const err = validate()
     if (err) return setMsg(err)
+    setMsg('⏳ Capturing from ESP32 (client-side fetch)...')
     try {
       const res = await onCollect('esp32', { tablet: tablet.trim(), expiry: expiry.trim() })
       setMsg(`✅ Saved: ${res.saved_as} (class: ${res.count_in_class}, total: ${res.total_images})`)
     } catch (e) {
-      setMsg(`❌ ${e.message}`)
+      const isMixed = e.message.includes('Mixed content')
+      const detail = isMixed
+        ? ' — Browser blocked HTTPS→HTTP. Use Upload button or allow insecure content (🔒 icon → Site settings → Insecure content: Allow), or connect via http://localhost:5000'
+        : e.message.includes('Cannot reach ESP32')
+          ? ' — Ensure WiFi ESP32-CAM_AP (pass: 12345678) is connected and open http://192.168.4.1/status to verify'
+          : ''
+      setMsg(`❌ ${e.message}${detail}`)
     }
   }
 
@@ -49,8 +56,9 @@ export default function CollectPanel({ onCollect, loading, error }) {
           <input type="file" accept="image/*" style={{display:'none'}} onChange={handleUpload} />
         </label>
       </div>
-      {msg && <div style={{marginTop:8, color: msg.includes('✅') ? '#4ade80' : '#f87171'}}>{msg}</div>}
-      <p className="small">Capture 30-50 photos per tablet+expiry combo. Saved to <code>dataset/Tablet__MM-YYYY/</code></p>
+      {msg && <div style={{marginTop:8, color: msg.includes('✅') ? '#4ade80' : msg.includes('⏳') ? '#facc15' : '#f87171', whiteSpace:'pre-wrap', wordBreak:'break-word', fontSize:12, background: msg.includes('❌') ? '#450a0a' : msg.includes('✅') ? '#052e16' : '#1e293b', padding:8, borderRadius:6}}>{msg}</div>}
+      <p className="small">Capture 30-50 photos per tablet+expiry combo. Saved to <code>dataset/Tablet__MM-YYYY/</code><br/>
+        Cloud mode: browser fetches <code>http://192.168.4.1/capture</code> then uploads to backend — must be on ESP32-CAM_AP WiFi. If blocked, use Upload.</p>
     </div>
   )
 }
