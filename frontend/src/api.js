@@ -22,13 +22,25 @@ export function getEsp32Base() {
 export function getEsp32Candidates() {
   const primary = getEsp32Base()
   const candidates = [primary]
-  // Always try mDNS and STA fallbacks when primary is 192.168.4.1
+  // Try saved STA IP if available (from previous /status)
+  try {
+    const sta = localStorage.getItem('esp32_sta_ip')
+    if (sta && sta.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+      const staUrl = `http://${sta}`
+      if (!candidates.includes(staUrl)) candidates.push(staUrl)
+    }
+  } catch {}
+  // mDNS always as fallback
   if (primary.includes('192.168.4.1')) {
     candidates.push('http://esp32cam.local')
   }
-  // If primary is mDNS, also try 192.168.4.1 fallback
   if (primary.includes('esp32cam.local')) candidates.push('http://192.168.4.1')
   return [...new Set(candidates)]
+}
+
+// Save STA IP when discovered
+export function saveStaIp(ip) {
+  try { if (ip && ip.match(/^\d+\.\d+\.\d+\.\d+$/)) localStorage.setItem('esp32_sta_ip', ip) } catch {}
 }
 
 // Detect if we are on HTTPS cloud deployment (mixed content will block http:// ESP32 fetch)
@@ -57,11 +69,11 @@ export async function api(path, options = {}) {
 // This is the CORRECT way for cloud deployments: browser fetches ESP32 directly
 // (when connected to ESP32-CAM_AP) then uploads blob to backend
 async function fetchEsp32BlobViaImage(url) {
-  // Fallback for HTTPS mixed-content: use <img> passive load + canvas (works even when fetch blocked if ESP32 sends CORS *)
+  // Fallback for HTTPS mixed-content: use <img> passive load + canvas
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.crossOrigin = 'anonymous'
-    const timeout = setTimeout(() => { img.src = ''; reject(new Error('Image load timeout (4s)')) }, 6000)
+    const timeout = setTimeout(() => { img.src = ''; reject(new Error('Image load timeout (12s) - ESP32 slow or blocked')) }, 12000)
     img.onload = () => {
       clearTimeout(timeout)
       try {
@@ -72,7 +84,7 @@ async function fetchEsp32BlobViaImage(url) {
         const ctx = canvas.getContext('2d')
         ctx.drawImage(img, 0, 0)
         canvas.toBlob((blob) => {
-          if (!blob) reject(new Error('Canvas toBlob failed (CORS taint?)'))
+          if (!blob) reject(new Error('Canvas toBlob failed (CORS taint?) - flash ESP32 with new firmware'))
           else if (blob.size < 100) reject(new Error('Empty image from canvas'))
           else resolve(blob)
         }, 'image/jpeg', 0.92)
@@ -82,7 +94,7 @@ async function fetchEsp32BlobViaImage(url) {
     }
     img.onerror = () => {
       clearTimeout(timeout)
-      reject(new Error('Image load failed - ensure ESP32 is reachable and CORS enabled'))
+      reject(new Error('Image load failed - ESP32 not reachable at ' + url + ' (check WiFi/STA IP)'))
     }
     img.src = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`
   })
@@ -149,7 +161,7 @@ async function checkEsp32ViaImage(base) {
   const b = base || getEsp32Base()
   return new Promise((resolve) => {
     const img = new Image()
-    const timeout = setTimeout(() => { img.src = ''; resolve(false) }, 4000)
+    const timeout = setTimeout(() => { img.src = ''; resolve(false) }, 8000)
     img.onload = () => { clearTimeout(timeout); resolve(true) }
     img.onerror = () => { clearTimeout(timeout); resolve(false) }
     img.src = `${b}/capture?_t=${Date.now()}`
@@ -160,7 +172,7 @@ async function fetchStatusFrom(base) {
   const res = await fetch(`${base}/status`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = await res.json()
-  // include STA IP for auto-switch UI
+  if (data.sta_ip) saveStaIp(data.sta_ip)
   return { data, base }
 }
 

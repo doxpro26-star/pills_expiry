@@ -19,13 +19,15 @@ export default function CollectPanel({ onCollect, loading, error }) {
       const res = await onCollect('esp32', { tablet: tablet.trim(), expiry: expiry.trim() })
       setMsg(`✅ Saved: ${res.saved_as} (class: ${res.count_in_class}, total: ${res.total_images})`)
     } catch (e) {
-      const isMixed = e.message.includes('Mixed content')
-      const detail = isMixed
-        ? ' — Browser blocked HTTPS→HTTP. Use Upload button or allow insecure content (🔒 icon → Site settings → Insecure content: Allow), or connect via http://localhost:5000'
-        : e.message.includes('Cannot reach ESP32')
-          ? ' — Ensure WiFi ESP32-CAM_AP (pass: 12345678) is connected and open http://192.168.4.1/status to verify'
-          : ''
-      setMsg(`❌ ${e.message}${detail}`)
+      const msg = e.message || String(e)
+      const isMixed = msg.includes('Mixed content') || msg.includes('HTTPS→HTTP') || msg.includes('Insecure')
+      if (isMixed) {
+        setMsg(`⚠️ BROWSER SECURITY: HTTPS site cannot fetch HTTP ESP32 at ${msg.includes('192.168.4.1')?'192.168.4.1':''} — FIX: 1) Click 🔒 → Site settings → Insecure content: Allow → Reload → Retry, OR 2) Use 📁 Upload & Save (phone camera works same), OR 3) Run local http://localhost:5000 or use ESP32 STA IP (http://192.168.4.1/wifi → join home WiFi → no hotspot switch).`)
+      } else if (msg.includes('Cannot reach ESP32')) {
+        setMsg(`❌ ${msg} — Ensure WiFi: ESP32-CAM_AP (12345678) OR home WiFi if STA configured (http://192.168.4.1/wifi). Save correct IP above.`)
+      } else {
+        setMsg(`❌ ${msg}`)
+      }
     }
   }
 
@@ -56,9 +58,13 @@ export default function CollectPanel({ onCollect, loading, error }) {
           <input type="file" accept="image/*" style={{display:'none'}} onChange={handleUpload} />
         </label>
       </div>
-      {msg && <div style={{marginTop:8, color: msg.includes('✅') ? '#4ade80' : msg.includes('⏳') ? '#facc15' : '#f87171', whiteSpace:'pre-wrap', wordBreak:'break-word', fontSize:12, background: msg.includes('❌') ? '#450a0a' : msg.includes('✅') ? '#052e16' : '#1e293b', padding:8, borderRadius:6}}>{msg}</div>}
+      {msg && <div style={{marginTop:8, color: msg.includes('✅') ? '#4ade80' : msg.includes('⚠️') ? '#fbbf24' : msg.includes('⏳') ? '#facc15' : '#f87171', whiteSpace:'pre-wrap', wordBreak:'break-word', fontSize:12, background: msg.includes('⚠️') ? '#422006' : msg.includes('❌') ? '#450a0a' : msg.includes('✅') ? '#052e16' : '#1e293b', padding:8, borderRadius:6, border: msg.includes('⚠️') ? '1px solid #d97706' : 'none'}}>{msg}</div>}
+      {msg && msg.includes('⚠️') && <div className="row" style={{marginTop:6}}>
+        <a className="btn secondary" href="http://192.168.4.1/capture" target="_blank" rel="noreferrer" style={{fontSize:11,padding:'6px 10px',textDecoration:'none'}}>Open ESP32 Capture (http)</a>
+        <label className="btn primary" style={{fontSize:11,padding:'6px 10px',cursor:'pointer'}}>📱 Use Phone Camera<input type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={handleUpload} /></label>
+      </div>}
       <p className="small">Capture 30-50 photos per tablet+expiry combo. Saved to <code>dataset/Tablet__MM-YYYY/</code><br/>
-        Cloud mode: browser fetches <code>http://192.168.4.1/capture</code> then uploads to backend — must be on ESP32-CAM_AP WiFi. If blocked, use Upload.</p>
+        Cloud (https://): Use <b>Allow insecure content</b> or <b>Upload / Phone Camera</b>. STA mode (home WiFi): ESP32 joins home WiFi via <a href="http://192.168.4.1/wifi" target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>http://192.168.4.1/wifi</a> → no hotspot switch.</p>
     </div>
   )
 }
