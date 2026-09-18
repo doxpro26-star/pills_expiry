@@ -556,10 +556,20 @@ HTML_PAGE = """
   <div class="stream-wrap">
     <div class="stream-label">
       <span class="pulse-dot"></span> Live Camera &mdash; ESP32-CAM
+      <span id="esp32_extra" style="margin-left:auto;font-size:.65rem;color:var(--primary-dark);"></span>
     </div>
-    <img id="stream" src="http://192.168.4.1/stream"
-         onerror="this.src='/proxy/stream'; this.onerror=null"
-         alt="ESP32 Camera Stream">
+    <div id="esp_banner" style="display:none;padding:8px 12px;font-size:.78rem;text-align:left;line-height:1.5;"></div>
+    <img id="stream" src="" alt="ESP32 Camera Stream" style="display:none">
+    <div id="stream_fallback" style="display:none;padding:30px;color:var(--text-muted);background:#e2e8f0;">
+      <div style="font-size:1.1rem;margin-bottom:8px;">📷 Stream unavailable</div>
+      <div id="stream_msg" style="font-size:.82rem;line-height:1.6;max-width:600px;margin:0 auto;text-align:left;background:#fff;padding:12px;border-radius:8px;border:1px solid var(--border);"></div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+        <button class="btn btn-ghost" onclick="loadStream('direct')">Retry Direct</button>
+        <button class="btn btn-ghost" onclick="loadStream('proxy')">Try Proxy</button>
+        <a class="btn btn-primary" href="http://192.168.4.1/stream" target="_blank">Open Stream (http)</a>
+        <a class="btn btn-outline" href="http://192.168.4.1/wifi" target="_blank">📶 WiFi Setup</a>
+      </div>
+    </div>
   </div>
 
   <!-- Step 1: Collect -->
@@ -642,9 +652,86 @@ HTML_PAGE = """
 </main>
 
 <script>
-function flashCtrl(state){
-  fetch('http://192.168.4.1/flash?state='+state).catch(()=>fetch('/esp32/flash?state='+state));
+// ESP32 auto-connect (AP+STA) - check both 192.168.4.1 and esp32cam.local and STA IP
+let espBase = localStorage.getItem('esp32_ip') || '192.168.4.1';
+let espCandidates = [];
+let staIpCache = '';
+function getEspBase(){ let ip=localStorage.getItem('esp32_ip')||'192.168.4.1'; return ip.startsWith('http')?ip.replace(/\/$/,''):'http://'+ip; }
+function updateCandidates(){
+  let base=getEspBase();
+  espCandidates=[base];
+  if(staIpCache && !espCandidates.includes('http://'+staIpCache)) espCandidates.push('http://'+staIpCache);
+  if(base.includes('192.168.4.1') && !espCandidates.includes('http://esp32cam.local')) espCandidates.push('http://esp32cam.local');
+  if(base.includes('esp32cam.local') && !espCandidates.includes('http://192.168.4.1')) espCandidates.push('http://192.168.4.1');
 }
+updateCandidates();
+let isHttps = location.protocol==='https:';
+
+function flashCtrl(state){
+  let base=getEspBase();
+  fetch(base+'/flash?state='+state).catch(()=>fetch('/esp32/flash?state='+state)).catch(()=>{});
+}
+
+// Stream loader with HTTPS mixed-content handling
+function loadStream(mode){
+  updateCandidates();
+  let url = mode==='proxy' ? '/proxy/stream' : getEspBase()+'/stream';
+  let img=document.getElementById('stream');
+  let fb=document.getElementById('stream_fallback');
+  img.style.display='none'; fb.style.display='none';
+  img.onerror=null; img.onload=null;
+  img.onload=()=>{ img.style.display='block'; fb.style.display='none'; document.getElementById('esp32_extra').textContent='✅ Stream OK'; };
+  img.onerror=()=>{
+    if(mode==='direct' || !mode){
+      // try proxy next
+      console.warn('Direct stream failed, trying proxy', url);
+      if(mode!=='proxy'){ loadStream('proxy'); return; }
+    }
+    img.style.display='none';
+    fb.style.display='block';
+    let msg=document.getElementById('stream_msg');
+    if(isHttps){
+      msg.innerHTML='<b style=color:#d97706>HTTPS blocks HTTP stream (mixed content).</b><br>1) Stay on <code>ESP32-CAM_AP</code> + mobile data ON, or join same home WiFi as ESP32 STA<br>2) <a href="'+getEspBase()+'/stream" target=_blank>Open http stream in new tab</a> always works<br>3) For embedded: 🔒 address bar → Site settings → Insecure content: Allow → Reload → Retry Direct<br>4) Or use STA: <a href=http://192.168.4.1/wifi target=_blank>http://192.168.4.1/wifi</a> → join home WiFi → no hotspot switch';
+    } else {
+      msg.innerHTML='Connect to <code>ESP32-CAM_AP</code> or home WiFi with ESP32 STA, then <a href="'+getEspBase()+'/stream" target=_blank>'+getEspBase()+'/stream</a>';
+    }
+  };
+  img.src=url;
+  // timeout fallback
+  setTimeout(()=>{ if(!img.complete || img.naturalWidth===0){ img.onerror(); } }, 6000);
+}
+loadStream('direct');
+
+async function fetchEsp32Status(){
+  updateCandidates();
+  for(let base of espCandidates){
+    try{
+      let r=await fetch(base+'/status',{cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      let j=await r.json();
+      if(j.sta_ip) staIpCache=j.sta_ip;
+      return {online:true, via:'fetch', data:j, base};
+    }catch(e){}
+  }
+  // proxy for HTTPS
+  if(isHttps){
+    try{
+      let r=await fetch('/esp32/status',{cache:'no-store'});
+      if(r.ok){ let j=await r.json(); if(j.sta_ip) staIpCache=j.sta_ip; return {online:true, via:'proxy', data:j, base:espCandidates[0]}; }
+    }catch(e){}
+    // image probe
+    for(let base of espCandidates){
+      let ok=await new Promise(res=>{
+        let im=new Image(); let t=setTimeout(()=>{im.src=''; res(false)},4000);
+        im.onload=()=>{clearTimeout(t); res(true)}; im.onerror=()=>{clearTimeout(t); res(false)};
+        im.src=base+'/capture?_t='+Date.now();
+      });
+      if(ok) return {online:true, via:'image', data:{sta_ip:staIpCache}, base};
+    }
+  }
+  return {online:false};
+}
+
 async function refreshHealth(){
   try{
     let r=await fetch('/health'); let j=await r.json();
@@ -656,15 +743,86 @@ async function refreshHealth(){
       document.getElementById('model_status').innerText='Not trained ('+j.dataset_images+' images collected)';
       dot.className='dot dot-warn';
     }
+    // Show STA hint in banner if cloud
+    if(j.is_cloud){
+      document.getElementById('esp32_extra').textContent='☁️ Cloud - STA recommended';
+    }
   }catch(e){}
-  try{
-    let r=await fetch('/esp32/status'); let j=await r.json();
-    document.getElementById('esp32stat').innerHTML='<span class="dot dot-online"></span> ESP32: '+j.ip+' | clients: '+j.clients;
-  }catch(e){
-    document.getElementById('esp32stat').innerHTML='<span class="dot dot-offline"></span> ESP32 offline &mdash; join ESP32-CAM_AP';
+  let s=await fetchEsp32Status();
+  let el=document.getElementById('esp32stat');
+  let banner=document.getElementById('esp_banner');
+  if(s.online){
+    let d=s.data; let staInfo=d.sta_ip?` STA:${d.sta_ip}`:'';
+    el.innerHTML='<span class="dot dot-online"></span> ESP32: '+s.base+' via '+s.via+staInfo;
+    if(d.sta_ip){
+      localStorage.setItem('esp32_sta_ip', d.sta_ip);
+      banner.style.display='block';
+      banner.style.background='#d1fae5'; banner.style.color='#065f46'; banner.style.border='1px solid #a7f3d0';
+      banner.innerHTML='✅ STA Connected: <b>http://'+d.sta_ip+'</b> (esp32cam.local) – <b>No hotspot switching!</b> <a href="http://192.168.4.1/wifi" target=_blank style=color:#065f46>WiFi Setup</a> | <button class="btn btn-ghost" style="padding:2px 8px;font-size:.75rem" onclick="localStorage.setItem(\'esp32_ip\',\''+d.sta_ip+'\');location.reload()">Use STA IP</button>';
+    } else if(s.via==='image'){
+      banner.style.display='block'; banner.style.background='#fef3c7'; banner.style.color='#92400e';
+      banner.innerHTML='🟡 Stream loads but JS fetch blocked by HTTPS – Allow insecure content for Capture buttons or use STA mode: <a href=http://192.168.4.1/wifi target=_blank>wifi setup</a>';
+    } else { banner.style.display='none'; }
+  }else{
+    el.innerHTML='<span class="dot dot-offline"></span> ESP32 offline &mdash; join ESP32-CAM_AP or home WiFi (STA)';
+    if(isHttps){
+      banner.style.display='block'; banner.style.background='#fef3c7'; banner.style.color='#92400e'; banner.style.border='1px solid #fcd34d';
+      banner.innerHTML='⚠️ HTTPS blocks HTTP to ESP32 – Allow insecure content (🔒→Site settings→Insecure:Allow) or use <a href="http://192.168.4.1/wifi" target=_blank>STA WiFi</a> or Upload';
+    } else { banner.style.display='none'; }
   }
 }
-setInterval(refreshHealth,3000); refreshHealth();
+setInterval(refreshHealth,5000); refreshHealth();
+
+// Client-side ESP32 fetch for cloud (avoids Render cannot reach 192.168.4.1)
+async function fetchEsp32BlobViaImage(url){
+  return new Promise((resolve,reject)=>{
+    let im=new Image(); im.crossOrigin='anonymous';
+    let t=setTimeout(()=>{im.src=''; reject(new Error('Image timeout 12s'))},12000);
+    im.onload=()=>{
+      clearTimeout(t);
+      try{
+        let c=document.createElement('canvas'); c.width=im.naturalWidth||im.width; c.height=im.naturalHeight||im.height;
+        if(!c.width) throw new Error('zero size');
+        c.getContext('2d').drawImage(im,0,0);
+        c.toBlob(b=>{
+          if(!b) reject(new Error('Canvas taint'));
+          else if(b.size<100) reject(new Error('empty'));
+          else resolve(b);
+        },'image/jpeg',0.92);
+      }catch(e){ reject(e); }
+    };
+    im.onerror=()=>{clearTimeout(t); reject(new Error('Image load failed'));};
+    im.src=url+(url.includes('?')?'&':'?')+'_t='+Date.now();
+  });
+}
+async function fetchEsp32Blob(endpoint='/capture'){
+  updateCandidates();
+  let last=null;
+  for(let base of espCandidates){
+    let url=base+endpoint;
+    try{
+      let r=await fetch(url,{cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      let b=await r.blob(); if(b.size<100) throw new Error('empty');
+      localStorage.setItem('esp32_ip', base.replace('http://',''));
+      return b;
+    }catch(e){
+      let msg=String(e);
+      let isMixed=isHttps && url.startsWith('http://') && (msg.includes('Failed')||msg.includes('fetch'));
+      if(isMixed){
+        try{
+          let b=await fetchEsp32BlobViaImage(url);
+          localStorage.setItem('esp32_ip', base.replace('http://',''));
+          return b;
+        }catch(ie){ last=ie; continue; }
+      }
+      last=e;
+      if(base!==espCandidates[espCandidates.length-1]) continue;
+      throw new Error('Cannot reach ESP32 at '+espCandidates.map(c=>c+endpoint).join(' or ')+'. STA: http://192.168.4.1/wifi');
+    }
+  }
+  throw last;
+}
 
 function getTabletExpiry(){
   let t=document.getElementById('tablet').value.trim();
@@ -682,10 +840,28 @@ async function collect(src){
   showMsg('collect_msg','Saving image...',false);
   try{
     let res;
-    if(src==='esp32'){ res=await fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(info)}); }
+    if(src==='esp32'){
+      // Cloud: browser fetches ESP32 then uploads (Render cannot reach 192.168.4.1)
+      let isCloud = location.protocol==='https:';
+      if(isCloud || true){
+        try{
+          let blob=await fetchEsp32Blob('/capture');
+          let fd=new FormData(); fd.append('image', new File([blob],'cap.jpg',{type:'image/jpeg'})); fd.append('tablet',info.tablet); fd.append('expiry',info.expiry);
+          res=await fetch('/collect_upload',{method:'POST',body:fd});
+        }catch(fetchErr){
+          // Fallback to backend /collect for local deployments
+          if(String(fetchErr).includes('Mixed content') || String(fetchErr).includes('Browser blocked')){
+            showMsg('collect_msg','⚠️ '+fetchErr.message+' — Use Upload or Allow insecure content, or STA mode (http://192.168.4.1/wifi)',true); return;
+          }
+          res=await fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(info)});
+        }
+      } else {
+        res=await fetch('/collect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(info)});
+      }
+    }
     else{ let f=document.getElementById('cupload').files[0]; if(!f) return; let fd=new FormData(); fd.append('image',f); fd.append('tablet',info.tablet); fd.append('expiry',info.expiry); res=await fetch('/collect_upload',{method:'POST',body:fd}); }
     let d=await res.json();
-    if(d.error){ showMsg('collect_msg','Error: '+d.error,true); return; }
+    if(d.error){ showMsg('collect_msg','Error: '+d.error+' '+(d.details||d.hint||''),true); return; }
     showMsg('collect_msg','✓ Saved: '+d.saved_as+' (class: '+d.count_in_class+' imgs, total: '+d.total_images+' imgs)',false);
     refreshHealth();
   }catch(e){ showMsg('collect_msg','Failed: '+e,true); }
@@ -709,10 +885,27 @@ async function identify(src){
   document.getElementById('preview').innerHTML='';
   try{
     let res;
-    if(src==='esp32'){ res=await fetch('/identify',{method:'POST'}); }
+    if(src==='esp32'){
+      let isCloud = location.protocol==='https:';
+      if(isCloud || true){
+        try{
+          let blob=await fetchEsp32Blob('/capture');
+          let fd=new FormData(); fd.append('image', new File([blob],'cap.jpg',{type:'image/jpeg'}));
+          res=await fetch('/identify_upload',{method:'POST',body:fd});
+        }catch(fetchErr){
+          if(String(fetchErr).includes('Mixed content') || String(fetchErr).includes('Browser blocked')){
+            document.getElementById('result').textContent='⚠️ '+fetchErr.message;
+            return;
+          }
+          res=await fetch('/identify',{method:'POST'});
+        }
+      } else {
+        res=await fetch('/identify',{method:'POST'});
+      }
+    }
     else{ let f=document.getElementById('iupload').files[0]; if(!f) return; let fd=new FormData(); fd.append('image',f); res=await fetch('/identify_upload',{method:'POST',body:fd}); }
     let d=await res.json();
-    if(d.error){ document.getElementById('result').textContent='❌ '+d.error+' '+(d.details||''); return; }
+    if(d.error){ document.getElementById('result').textContent='❌ '+d.error+' '+(d.details||d.hint||''); return; }
     showResult(d,d.preview);
   }catch(e){ document.getElementById('result').textContent='❌ Failed: '+e; }
 }
