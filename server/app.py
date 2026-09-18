@@ -680,13 +680,13 @@ function updateCandidates(){
 updateCandidates();
 let isHttps = location.protocol==='https:';
 
-function flashCtrl(state){
+window.flashCtrl = function(state){
   let base=getEspBase();
   fetch(base+'/flash?state='+state).catch(()=>fetch('/esp32/flash?state='+state)).catch(()=>{});
-}
+};
 
 // Stream loader with HTTPS mixed-content handling
-function loadStream(mode){
+window.loadStream = function(mode){
   updateCandidates();
   let url = mode==='proxy' ? '/proxy/stream' : getEspBase()+'/stream';
   let img=document.getElementById('stream');
@@ -704,7 +704,7 @@ function loadStream(mode){
     fb.style.display='block';
     let msg=document.getElementById('stream_msg');
     if(isHttps){
-      msg.innerHTML='<b style=color:#d97706>HTTPS blocks HTTP stream (mixed content).</b><br>1) Stay on <code>ESP32-CAM_AP</code> + mobile data ON, or join same home WiFi as ESP32 STA<br>2) <a href="'+getEspBase()+'/stream" target=_blank>Open http stream in new tab</a> always works<br>3) For embedded: 🔒 address bar → Site settings → Insecure content: Allow → Reload → Retry Direct<br>4) Or use STA: <a href=http://192.168.4.1/wifi target=_blank>http://192.168.4.1/wifi</a> → join home WiFi → no hotspot switch';
+      msg.innerHTML='<b style="color:#d97706">HTTPS blocks HTTP stream (mixed content).</b><br>1) Stay on <code>ESP32-CAM_AP</code> + mobile data ON, or join same home WiFi as ESP32 STA<br>2) <a href="'+getEspBase()+'/stream" target="_blank">Open http stream in new tab</a> always works<br>3) For embedded: 🔒 address bar → Site settings → Insecure content: Allow → Reload → Retry Direct<br>4) Or use STA: <a href="http://192.168.4.1/wifi" target="_blank">http://192.168.4.1/wifi</a> → join home WiFi → no hotspot switch';
     } else {
       msg.innerHTML='Connect to <code>ESP32-CAM_AP</code> or home WiFi with ESP32 STA, then <a href="'+getEspBase()+'/stream" target=_blank>'+getEspBase()+'/stream</a>';
     }
@@ -771,10 +771,10 @@ async function refreshHealth(){
       localStorage.setItem('esp32_sta_ip', d.sta_ip);
       banner.style.display='block';
       banner.style.background='#d1fae5'; banner.style.color='#065f46'; banner.style.border='1px solid #a7f3d0';
-      banner.innerHTML='✅ STA Connected: <b>http://'+d.sta_ip+'</b> (esp32cam.local) – <b>No hotspot switching!</b> <a href="http://192.168.4.1/wifi" target=_blank style=color:#065f46>WiFi Setup</a> | <button class="btn btn-ghost" style="padding:2px 8px;font-size:.75rem" onclick="localStorage.setItem(\'esp32_ip\',\''+d.sta_ip+'\');location.reload()">Use STA IP</button>';
+      banner.innerHTML='✅ STA Connected: <b>http://'+d.sta_ip+'</b> (esp32cam.local) – <b>No hotspot switching!</b> <a href="http://192.168.4.1/wifi" target="_blank" style="color:#065f46">WiFi Setup</a> | <button class="btn btn-ghost" style="padding:2px 8px;font-size:.75rem" onclick="localStorage.setItem(\'esp32_ip\',\''+d.sta_ip+'\');location.reload()">Use STA IP</button>';
     } else if(s.via==='image'){
       banner.style.display='block'; banner.style.background='#fef3c7'; banner.style.color='#92400e';
-      banner.innerHTML='🟡 Stream loads but JS fetch blocked by HTTPS – Allow insecure content for Capture buttons or use STA mode: <a href=http://192.168.4.1/wifi target=_blank>wifi setup</a>';
+      banner.innerHTML='🟡 Stream loads but JS fetch blocked by HTTPS – Allow insecure content for Capture buttons or use STA mode: <a href="http://192.168.4.1/wifi" target="_blank">wifi setup</a>';
     } else { banner.style.display='none'; }
   }else{
     el.innerHTML='<span class="dot dot-offline"></span> ESP32 offline &mdash; join ESP32-CAM_AP or home WiFi (STA)';
@@ -837,18 +837,18 @@ async function fetchEsp32Blob(endpoint='/capture'){
   throw last;
 }
 
-function getTabletExpiry(){
+window.getTabletExpiry = function(){
   let t=document.getElementById('tablet').value.trim();
   let e=document.getElementById('expiry').value.trim();
   if(!t||!e){ showMsg('collect_msg','Please enter tablet name + expiry (MM-YYYY) first.',true); return null; }
   return {tablet:t, expiry:e};
-}
-function showMsg(id,txt,isErr){
+};
+window.showMsg = function(id,txt,isErr){
   let el=document.getElementById(id);
   el.textContent=txt;
   el.className=isErr?'show err':'show';
-}
-async function collect(src){
+};
+window.collect = async function(src){
   let info=getTabletExpiry(); if(!info) return;
   showMsg('collect_msg','Saving image...',false);
   try{
@@ -879,7 +879,7 @@ async function collect(src){
     refreshHealth();
   }catch(e){ showMsg('collect_msg','Failed: '+e,true); }
 }
-function showResult(d,preview){
+window.showResult = function(d,preview){
   let top=d.top1;
   let cls=top.is_expired?'expired':(top.days_left!==null&&top.days_left<90?'warn':'valid');
   let icon=top.is_expired?'❌':(top.days_left!==null&&top.days_left<90?'⚠️':'✅');
@@ -891,8 +891,8 @@ function showResult(d,preview){
   html+=' &nbsp;•&nbsp; <span style="color:var(--text-light)">Inference: '+d.inference_ms+'ms</span>';
   document.getElementById('details').innerHTML=html;
   document.getElementById('preview').innerHTML='<img src="'+preview+'" alt="Captured tablet">';
-}
-async function identify(src){
+};
+window.identify = async function(src){
   document.getElementById('result').textContent='⏳ Analysing…';
   document.getElementById('details').innerHTML='';
   document.getElementById('preview').innerHTML='';
