@@ -14,9 +14,21 @@ export function setEsp32Ip(ip) {
 }
 export function getEsp32Base() {
   const ip = getEsp32Ip()
-  // Ensure http:// prefix - ESP32 only supports HTTP, not HTTPS
+  // Ensure http:// prefix - ESP32 only supports HTTP, not HTTPS (supports mDNS esp32cam.local)
   if (ip.startsWith('http://') || ip.startsWith('https://')) return ip.replace(/\/$/, '')
   return `http://${ip}`
+}
+
+export function getEsp32Candidates() {
+  const primary = getEsp32Base()
+  const candidates = [primary]
+  // Always try mDNS and STA fallbacks when primary is 192.168.4.1
+  if (primary.includes('192.168.4.1')) {
+    candidates.push('http://esp32cam.local')
+  }
+  // If primary is mDNS, also try 192.168.4.1 fallback
+  if (primary.includes('esp32cam.local')) candidates.push('http://192.168.4.1')
+  return [...new Set(candidates)]
 }
 
 // Detect if we are on HTTPS cloud deployment (mixed content will block http:// ESP32 fetch)
@@ -77,48 +89,44 @@ async function fetchEsp32BlobViaImage(url) {
 }
 
 export async function fetchEsp32Blob(endpoint = '/capture') {
-  const base = getEsp32Base()
-  const url = `${base}${endpoint}`
-  
-  // Try direct fetch with CORS first
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      cache: 'no-store',
-    })
-    if (!res.ok) throw new Error(`ESP32 returned HTTP ${res.status}`)
-    const blob = await res.blob()
-    if (blob.size < 100) throw new Error('ESP32 returned empty image')
-    return blob
-  } catch (e) {
-    const isMixedContent = isHttps() && url.startsWith('http://')
-    const msg = e.message || String(e)
-    
-    // On HTTPS mixed-content block, try <img> fallback (passive content may still load)
-    if (isMixedContent && (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed') || msg.includes('fetch'))) {
-      try {
-        console.warn('Fetch blocked (mixed content), trying <img> fallback for', url)
-        const blob = await fetchEsp32BlobViaImage(url)
-        console.log('Image fallback succeeded for', url, 'size', blob.size)
-        return blob
-      } catch (imgErr) {
-        throw new Error(
-          `Mixed content blocked (HTTPS→HTTP): ${url} – Browser blocks fetch to local IP. Image fallback also failed: ${imgErr.message}. ` +
-          `Solutions: (1) Allow insecure content: click 🔒 in address bar → Site settings → Insecure content: Allow → Reload, ` +
-          `(2) Use Upload button, or (3) Run backend locally at http://localhost:5000. ` +
-          `You must be on WiFi ESP32-CAM_AP (12345678). Your stream image may still show – that's passive content, but JS capture needs insecure allow or fallback.`
-        )
+  const candidates = getEsp32Candidates()
+  let lastErr = null
+  for (const base of candidates) {
+    const url = `${base}${endpoint}`
+    try {
+      const res = await fetch(url, { method: 'GET', cache: 'no-store' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      if (blob.size < 100) throw new Error('Empty image')
+      // success - remember working host
+      if (base !== getEsp32Base()) try { localStorage.setItem('esp32_ip', base.replace('http://','')) } catch {}
+      return blob
+    } catch (e) {
+      lastErr = e
+      const isMixedContent = isHttps() && url.startsWith('http://')
+      const msg = e.message || String(e)
+      if (isMixedContent && (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed') || msg.includes('fetch'))) {
+        try {
+          console.warn('Fetch blocked (mixed content), trying <img> fallback for', url)
+          const blob = await fetchEsp32BlobViaImage(url)
+          console.log('Image fallback succeeded for', url, 'size', blob.size)
+          if (base !== getEsp32Base()) try { localStorage.setItem('esp32_ip', base.replace('http://','')) } catch {}
+          return blob
+        } catch (imgErr) {
+          lastErr = new Error(`Mixed content blocked ${url} image fallback: ${imgErr.message}`)
+          continue // try next candidate (esp32cam.local)
+        }
       }
+      // For non-mixed content errors on 192.168.4.1, try next candidate (mDNS)
+      if (candidates.length > 1 && base !== candidates[candidates.length-1]) continue
+      const isFetchFail = msg.includes('Failed to fetch') || msg.includes('NetworkError')
+      if (isFetchFail) {
+        throw new Error(`Cannot reach ESP32 at ${candidates.map(c=>c+endpoint).join(' or ')}. STA mode: connect ESP32 to home WiFi via http://192.168.4.1/wifi then use STA IP (no hotspot switch). Current: must be on ${candidates[0].includes('4.1') ? 'ESP32-CAM_AP' : 'home WiFi with ESP32 STA'}. Details: ${msg}`)
+      }
+      throw new Error(`ESP32 fetch failed (${url}): ${msg}`)
     }
-    if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-      throw new Error(
-        `Cannot reach ESP32 at ${url}. Check: (1) Connected to WiFi ESP32-CAM_AP (pass: 12345678), ` +
-        `(2) ESP32 IP is ${getEsp32Ip()} (try http://${getEsp32Ip()}/status in browser), ` +
-        `(3) ESP32 is powered on. Details: ${msg}`
-      )
-    }
-    throw new Error(`ESP32 fetch failed (${url}): ${msg}`)
   }
+  throw lastErr || new Error('All ESP32 candidates failed')
 }
 
 // Client-side collect: fetch from ESP32 in browser, then upload to backend
@@ -137,49 +145,68 @@ export async function identifyEsp32ClientSide() {
 }
 
 // Check ESP32 connectivity from browser - tries fetch, then proxy, then image load for HTTPS mixed-content
-async function checkEsp32ViaImage() {
-  const base = getEsp32Base()
+async function checkEsp32ViaImage(base) {
+  const b = base || getEsp32Base()
   return new Promise((resolve) => {
     const img = new Image()
     const timeout = setTimeout(() => { img.src = ''; resolve(false) }, 4000)
     img.onload = () => { clearTimeout(timeout); resolve(true) }
     img.onerror = () => { clearTimeout(timeout); resolve(false) }
-    // Use /capture with cache-bust as test image - ESP32 returns JPEG
-    img.src = `${base}/capture?_t=${Date.now()}`
+    img.src = `${b}/capture?_t=${Date.now()}`
   })
 }
 
-export async function checkEsp32Status() {
-  const base = getEsp32Base()
-  // 1) Try direct JS fetch (works on http:// local or when mixed-content allowed)
-  try {
-    const res = await fetch(`${base}/status`, { cache: 'no-store' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data = await res.json()
-    return { online: true, via: 'fetch', data, base }
-  } catch (e) {
-    const msg = e.message || String(e)
-    const httpsBlocked = isHttps()
-    const isFetchBlocked = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed')
+async function fetchStatusFrom(base) {
+  const res = await fetch(`${base}/status`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  // include STA IP for auto-switch UI
+  return { data, base }
+}
 
-    // 2) If HTTPS mixed-content block, try backend proxy (only works if backend is LOCAL - on Render it will also fail)
-    if (httpsBlocked && isFetchBlocked) {
-      try {
-        const pr = await fetch(`${API_BASE}/esp32/status`, { cache: 'no-store' })
-        if (pr.ok) {
-          const data = await pr.json()
-          return { online: true, via: 'proxy', data, base }
-        }
-      } catch {}
-      // 3) Passive mixed-content check via <img> - browsers allow <img http> on https as passive content even when fetch is blocked
-      const imgOk = await checkEsp32ViaImage()
-      if (imgOk) {
-        return { online: true, via: 'image', streamWorks: true, base, warning: 'JS fetch blocked by HTTPS→HTTP (mixed content) but stream image loads - allow insecure content for Capture/Identify JS fetch' }
+export async function checkEsp32Status() {
+  const candidates = getEsp32Candidates()
+  let lastError = null
+  // 1) Try direct JS fetch on all candidates (192.168.4.1 and esp32cam.local)
+  for (const base of candidates) {
+    try {
+      const { data } = await fetchStatusFrom(base)
+      // Save working base as preferred
+      if (base !== getEsp32Base()) {
+        try { localStorage.setItem('esp32_ip', base.replace('http://','')) } catch {}
       }
-      return { online: false, error: 'Failed to fetch', base, httpsBlocked: true, imgCheck: imgOk, hint: 'Browser blocks HTTPS→HTTP fetch. Allow insecure content or use http://localhost:5000 or Upload buttons.' }
+      return { online: true, via: 'fetch', data, base, sta_ip: data.sta_ip, sta_connected: data.sta_connected }
+    } catch (e) {
+      lastError = e
     }
-    return { online: false, error: msg, base, httpsBlocked }
   }
+  const msg = lastError ? (lastError.message || String(lastError)) : 'Unknown'
+  const httpsBlocked = isHttps()
+  const isFetchBlocked = msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed')
+
+  // 2) If HTTPS mixed-content block, try backend proxy (only works if backend is LOCAL - on Render it will also fail)
+  if (httpsBlocked && isFetchBlocked) {
+    // Try proxy for each candidate's path? proxy is same backend regardless, but try
+    try {
+      const pr = await fetch(`${API_BASE}/esp32/status`, { cache: 'no-store' })
+      if (pr.ok) {
+        const data = await pr.json()
+        // If proxy returns STA IP, offer to switch
+        return { online: true, via: 'proxy', data, base: candidates[0], sta_ip: data.sta_ip, sta_connected: data.sta_connected }
+      }
+    } catch {}
+    // 3) Passive mixed-content check via <img> on all candidates
+    for (const base of candidates) {
+      const imgOk = await checkEsp32ViaImage(base)
+      if (imgOk) {
+        // Try to get STA IP via image? can't get JSON, but we know stream works
+        return { online: true, via: 'image', streamWorks: true, base, sta_ip: null, warning: 'JS fetch blocked by HTTPS→HTTP (mixed content) but stream image loads - allow insecure content for Capture/Identify JS fetch. STA mode removes need for hotspot.' }
+      }
+    }
+    return { online: false, error: 'Failed to fetch', base: candidates[0], httpsBlocked: true, hint: 'Browser blocks HTTPS→HTTP fetch. Allow insecure content or connect ESP32 to home WiFi via http://192.168.4.1/wifi then use STA IP (no hotspot switch, internet stays). Or use Upload buttons.' }
+  }
+  // Include STA info if we ever got it via last attempt's error? try to extract
+  return { online: false, error: msg, base: candidates[0], httpsBlocked }
 }
 
 // Legacy: Backend-mediated fetch (only works when backend is on same network as ESP32, i.e., local dev)

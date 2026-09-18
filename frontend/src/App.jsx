@@ -122,12 +122,24 @@ function App() {
         {!isEspOnline && (
           <div style={{marginTop:4,color:'#94a3b8',fontSize:11}}>
             {isEspStreamOnline ? '✅ Stream works! ' : ''}Connect to WiFi <code>ESP32-CAM_AP</code> (pass: 12345678) then test again. Direct: <a href={getEsp32Base()+"/status"} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>http://{getEsp32Ip()}/status</a> | <a href={getEsp32Base()+"/capture"} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>/capture</a>
+            {esp32Status?.sta_ip && <span> | STA: <a href={`http://${esp32Status.sta_ip}/status`} target="_blank" rel="noreferrer" style={{color:'#4ade80'}}>http://{esp32Status.sta_ip}</a> <button className="btn secondary" style={{padding:'2px 6px',fontSize:10}} onClick={()=>{setEsp32IpEdit(esp32Status.sta_ip); setEsp32Ip(esp32Status.sta_ip); setStreamUrl(`http://${esp32Status.sta_ip}/stream`); setStreamError(false);}}>Use STA IP</button></span>}
+          </div>
+        )}
+        {esp32Status?.sta_connected && esp32Status?.sta_ip && (
+          <div style={{marginTop:6,background:'#0f3d1a',padding:6,borderRadius:4,fontSize:11,color:'#4ade80'}}>
+            ✅ STA Connected: <b>http://{esp32Status.sta_ip}</b> (mDNS: http://esp32cam.local) – <b>NO hotspot switching needed!</b> Your phone + ESP32 on same home WiFi (internet OK). Click Use STA IP above or Save IP manually. <a href={`http://${esp32Status.sta_ip}/wifi`} target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>WiFi Setup</a>
+          </div>
+        )}
+        {!esp32Status?.sta_connected && (
+          <div style={{marginTop:6,background:'#1e293b',padding:6,borderRadius:4,fontSize:11,color:'#fbbf24'}}>
+            💡 <b>Remove hotspot switching:</b> Connect phone to <code>ESP32-CAM_AP</code> → open <a href="http://192.168.4.1/wifi" target="_blank" rel="noreferrer" style={{color:'#7dd3fc'}}>http://192.168.4.1/wifi</a> → enter your home WiFi SSID/pass → ESP32 reboots and joins home WiFi → then website auto-connects via STA IP (no AP switch, internet stays).
           </div>
         )}
         <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
-          <input value={esp32IpEdit} onChange={e=>setEsp32IpEdit(e.target.value)} placeholder="192.168.4.1" style={{maxWidth:160,padding:'6px 8px',fontSize:12}} />
+          <input value={esp32IpEdit} onChange={e=>setEsp32IpEdit(e.target.value)} placeholder="192.168.4.1 or esp32cam.local" style={{maxWidth:180,padding:'6px 8px',fontSize:12}} />
           <button className="btn secondary" style={{padding:'6px 12px',fontSize:12}} onClick={handleSaveEsp32Ip}>Save IP</button>
-          <span className="small" style={{fontSize:10}}>Current: {getEsp32Base()} {isEspStreamOnline ? '| Stream OK' : ''} {isHttps() ? '| HTTPS' : '| HTTP'}</span>
+          <a className="btn secondary" href="http://192.168.4.1/wifi" target="_blank" rel="noreferrer" style={{padding:'6px 10px',fontSize:11,textDecoration:'none'}}>📶 WiFi Setup</a>
+          <span className="small" style={{fontSize:10}}>Current: {getEsp32Base()} {isEspStreamOnline ? '| Stream OK' : ''} {isHttps() ? '| HTTPS' : '| HTTP'} {esp32Status?.sta_ip ? '| STA:'+esp32Status.sta_ip : ''}</span>
         </div>
       </div>
       

@@ -1,10 +1,23 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Preferences.h>
+#include <ESPmDNS.h>
 
-// ====== Hotspot Configuration ======
+// ====== Hotspot (AP) Configuration - always available as fallback ======
 const char* ssid = "ESP32-CAM_AP";
 const char* password = "12345678"; // min 8 chars, leave "" for open hotspot
+
+// ====== STA Configuration - ESP32 connects to your home WiFi (auto website access, no hotspot switching) ======
+// Option 1: Hardcode your WiFi here (edit before upload) - leave "" to disable STA at first boot
+String sta_ssid = ""; // e.g. "MyHomeWiFi"
+String sta_pass = ""; // e.g. "mywifipass123"
+// Option 2: Leave above empty and configure via http://192.168.4.1/wifi after connecting to ESP32-CAM_AP
+// Credentials are saved in NVS and auto-used on next boot
+
+Preferences prefs;
+String sta_ip_cache = "";
+bool sta_connected = false;
 
 // ====== AI-Thinker ESP32-CAM Pins ======
 #define PWDN_GPIO_NUM     32
@@ -27,6 +40,24 @@ const char* password = "12345678"; // min 8 chars, leave "" for open hotspot
 
 WebServer server(80);
 
+// Load saved STA credentials from NVS
+void loadStaCreds() {
+  prefs.begin("wifi", true);
+  String s = prefs.getString("sta_ssid", "");
+  String p = prefs.getString("sta_pass", "");
+  prefs.end();
+  if (s.length() > 0) { sta_ssid = s; sta_pass = p; }
+  Serial.printf("STA creds loaded: ssid='%s' %s\n", sta_ssid.c_str(), sta_ssid.length()?"(from NVS)":"(empty - configure via /wifi)");
+}
+
+void saveStaCreds(String s, String p) {
+  prefs.begin("wifi", false);
+  prefs.putString("sta_ssid", s);
+  prefs.putString("sta_pass", p);
+  prefs.end();
+  Serial.printf("STA creds saved: ssid='%s'\n", s.c_str());
+}
+
 // HTML Page for monitoring
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -42,10 +73,13 @@ const char index_html[] PROGMEM = R"rawliteral(
  .on{background:#1a73e8;color:#fff} .off{background:#333;color:#fff}
  .row{margin:10px}
  small{color:#aaa}
+ .status{margin:12px auto;max-width:800px;background:#222;padding:12px;border-radius:8px;text-align:left;font-size:13px;line-height:1.8}
+ .ok{color:#4ade80} .warn{color:#facc15} .err{color:#f87171}
+ input{padding:8px;margin:4px;border:1px solid #555;border-radius:4px;background:#000;color:#fff;width:220px}
 </style>
 </head>
 <body>
-<h2>ESP32-CAM 20+FPS Monitor</h2>
+<h2>ESP32-CAM 20+FPS Monitor - AP+STA Auto-Connect</h2>
 <img id="stream" src="/stream" />
 <div class="row">
   <button class="btn on" onclick="fetch('/flash?state=on')">Flash ON</button>
@@ -57,10 +91,35 @@ const char index_html[] PROGMEM = R"rawliteral(
   <button class="btn off" onclick="fetch('/res?val=9')">XGA 1024x768 (~18fps)</button>
   <button class="btn off" onclick="fetch('/res?val=13')">UXGA 1600x1200 (~8fps)</button>
 </div>
-<p>Hotspot: ESP32-CAM_AP | IP: 192.168.4.1 | <small>Stream: SVGA | Photo: UXGA</small></p>
-<p><a style="color:#8ab4f8" href="/stream">/stream</a> | <a style="color:#8ab4f8" href="/capture">/capture</a></p>
+<div id="st" class="status">Loading status...</div>
+<script>
+fetch('/status').then(r=>r.json()).then(j=>{
+  let html = `<b>AP Hotspot:</b> ${j.ap_ssid} | <b>AP IP:</b> ${j.ap_ip} | Clients: ${j.clients}<br>`;
+  html += `<b>STA WiFi:</b> ${j.sta_ssid||'(not configured)'} | <b>STA IP:</b> <span class="${j.sta_connected?'ok':'err'}">${j.sta_ip||'disconnected'}</span> ${j.sta_connected?'<span class=ok>● Connected - NO hotspot switching needed!</span>':'<span class=warn>● Not connected - <a style=color:#facc15 href=/wifi>Configure WiFi</a></span>'}<br>`;
+  if(j.sta_ip) html += `<b>Access URLs:</b> <a style=color:#8ab4f8 href="http://${j.sta_ip}/">http://${j.sta_ip}/</a> | <a style=color:#8ab4f8 href="http://${j.sta_ip}/stream">/stream</a> | <a style=color:#8ab4f8 href="http://${j.sta_ip}/capture">/capture</a> (use this IP in website) | mDNS: <a style=color:#8ab4f8 href="http://esp32cam.local/">esp32cam.local</a><br>`;
+  html += `<b>AP URL (fallback):</b> <a style=color:#8ab4f8 href="http://192.168.4.1/">http://192.168.4.1/</a> | <small>Stream: SVGA | Photo: UXGA | PSRAM: ${j.psram}</small><br>`;
+  html += `<a style=color:#facc15 href="/wifi">📶 WiFi Setup</a> - Connect ESP32 to your home WiFi to remove hotspot switching`;
+  document.getElementById('st').innerHTML = html;
+}).catch(e=>{document.getElementById('st').innerHTML='Status failed: '+e});
+</script>
+<p><a style="color:#8ab4f8" href="/stream">/stream</a> | <a style="color:#8ab4f8" href="/capture">/capture</a> | <a style="color:#facc15" href="/wifi">/wifi</a></p>
 </body>
 </html>
+)rawliteral";
+
+// WiFi Setup Page
+const char wifi_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>WiFi Setup</title><style>body{font-family:Arial;background:#111;color:#fff;text-align:center;margin:0}h2{background:#1a73e8;margin:0;padding:12px}.card{max-width:420px;margin:24px auto;background:#222;padding:20px;border-radius:8px}input{width:90%;padding:10px;margin:8px 0;border-radius:6px;border:1px solid #555;background:#000;color:#fff}button{padding:12px 24px;background:#1a73e8;color:#fff;border:0;border-radius:6px;font-size:16px;cursor:pointer;width:95%}a{color:#8ab4f8}small{color:#aaa}</style></head><body><h2>📶 Connect ESP32 to Home WiFi</h2><div class="card">
+<p><b>Remove hotspot switching:</b> Enter your home WiFi. ESP32 will join it and get IP like 192.168.1.x - then website on same WiFi can reach it without connecting to ESP32-CAM_AP.</p>
+<p>Current STA: <span id="cur">loading...</span></p>
+<form action="/savewifi" method="POST">
+<input name="ssid" placeholder="WiFi SSID (e.g. JioFiber_2.4G)" required>
+<input name="pass" placeholder="WiFi Password" type="password">
+<button type="submit">Save & Connect</button>
+</form>
+<p><small>After save ESP32 reboots and tries to connect (10s). Keep hotspot ESP32-CAM_AP as fallback - if STA fails it stays accessible at 192.168.4.1.</small></p>
+<p><a href="/">← Back to Camera</a> | <a href="/status">Status JSON</a></p>
+</div><script>fetch('/status').then(r=>r.json()).then(j=>{document.getElementById('cur').innerText=j.sta_ssid?j.sta_ssid+' ('+(j.sta_connected?'✅ '+j.sta_ip:'❌ disconnected')+')':'(not configured)';});</script></body></html>
 )rawliteral";
 
 void handleCors() {
@@ -77,15 +136,48 @@ void handleRoot() {
 void handleStatus() {
   handleCors();
   String json = "{";
-  json += "\"ssid\":\"" + String(ssid) + "\",";
-  json += "\"ip\":\"" + WiFi.softAPIP().toString() + "\",";
+  json += "\"ap_ssid\":\"" + String(ssid) + "\",";
+  json += "\"ap_ip\":\"" + WiFi.softAPIP().toString() + "\",";
   json += "\"clients\":" + String(WiFi.softAPgetStationNum()) + ",";
+  // Legacy fields for old frontend
+  json += "\"ssid\":\"" + String(ssid) + "\",";
+  json += "\"ip\":\"" + (sta_connected ? WiFi.localIP().toString() : WiFi.softAPIP().toString()) + "\",";
+  json += "\"sta_ssid\":\"" + sta_ssid + "\",";
+  json += "\"sta_ip\":\"" + (sta_connected ? WiFi.localIP().toString() : "") + "\",";
+  json += "\"sta_connected\":" + String(sta_connected ? "true" : "false") + ",";
+  json += "\"mdns\":\"esp32cam.local\",";
   sensor_t * s = esp_camera_sensor_get();
   framesize_t fs = s ? s->status.framesize : FRAMESIZE_SVGA;
   json += "\"framesize\":" + String((int)fs) + ",";
   json += "\"psram\":" + String(psramFound() ? "true" : "false");
   json += "}";
   server.send(200, "application/json", json);
+}
+
+void handleWifiPage() {
+  handleCors();
+  server.send_P(200, "text/html", wifi_html);
+}
+
+void handleSaveWifi() {
+  handleCors();
+  if (!server.hasArg("ssid")) { server.send(400, "text/plain", "Missing ssid"); return; }
+  String s = server.arg("ssid");
+  String p = server.arg("pass");
+  s.trim(); p.trim();
+  if (s.length()==0 || s.length()>32) { server.send(400, "text/plain", "Invalid SSID"); return; }
+  saveStaCreds(s, p);
+  String resp = "<html><body style='font-family:Arial;background:#111;color:#fff;text-align:center;padding:40px'><h2 style='color:#4ade80'>✅ Saved! Rebooting...</h2><p>SSID: " + s + "</p><p>ESP32 will reboot and join your WiFi in 10s. Then check Serial or <a style=color:#8ab4f8 href='/status'>/status</a> for new STA IP.</p><p>If STA fails, hotspot 192.168.4.1 remains available.</p><p><a style=color:#8ab4f8 href='/'>Back</a></p></body></html>";
+  server.send(200, "text/html", resp);
+  delay(800);
+  ESP.restart();
+}
+
+void handleClearWifi() {
+  saveStaCreds("", "");
+  server.send(200, "text/plain", "Cleared - rebooting");
+  delay(500);
+  ESP.restart();
 }
 
 void handleOptions() {
@@ -266,18 +358,58 @@ void setup() {
 
   initCamera();
 
-  // Create Hotspot (Access Point)
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password, 1, 0, 4); // channel 1, max 4 clients
+  loadStaCreds();
 
-  IPAddress IP = WiFi.softAPIP();
+  // Dual mode: AP + STA - remove hotspot switching need
+  WiFi.mode(WIFI_AP_STA);
+  
+  // Always start AP as fallback
+  WiFi.softAP(ssid, password, 1, 0, 4); // channel 1, max 4 clients
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.println("=== WiFi Setup ===");
   Serial.print("Hotspot Created: ");
   Serial.println(ssid);
-  Serial.print("Password: ");
-  Serial.println(password);
-  Serial.print("Connect and open http://");
-  Serial.println(IP);
-  Serial.println("Stream URL: http://" + IP.toString() + "/stream");
+  Serial.print("AP IP: http://");
+  Serial.println(apIP);
+  Serial.print("AP Stream: http://");
+  Serial.print(apIP);
+  Serial.println("/stream");
+
+  // Try STA connection if credentials available
+  if (sta_ssid.length() > 0) {
+    Serial.printf("Connecting to STA WiFi: '%s' ...\n", sta_ssid.c_str());
+    WiFi.begin(sta_ssid.c_str(), sta_pass.c_str());
+    int tries = 0;
+    while (WiFi.status() != WL_CONNECTED && tries < 20) {
+      delay(500);
+      Serial.print(".");
+      tries++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      sta_connected = true;
+      sta_ip_cache = WiFi.localIP().toString();
+      Serial.println("\n✅ STA Connected!");
+      Serial.print("STA IP: http://");
+      Serial.println(WiFi.localIP());
+      Serial.print("STA Stream: http://");
+      Serial.print(WiFi.localIP());
+      Serial.println("/stream");
+      Serial.print("mDNS: http://esp32cam.local/ (if mDNS supported)\n");
+      // mDNS
+      if (MDNS.begin("esp32cam")) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.println("mDNS started: esp32cam.local");
+      }
+    } else {
+      sta_connected = false;
+      Serial.println("\n❌ STA Failed - staying on AP only");
+      Serial.println("Configure via http://192.168.4.1/wifi while connected to ESP32-CAM_AP");
+    }
+  } else {
+    Serial.println("No STA credentials - AP only mode");
+    Serial.println("To remove hotspot switching: connect to ESP32-CAM_AP -> open http://192.168.4.1/wifi -> enter your home WiFi");
+  }
+  Serial.println("==================");
 
   server.on("/", handleRoot);
   server.on("/capture", HTTP_GET, handleCapture);
@@ -289,6 +421,11 @@ void setup() {
   server.on("/res", handleResolution);
   server.on("/status", handleStatus);
   server.on("/status", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
+  server.on("/wifi", HTTP_GET, handleWifiPage);
+  server.on("/wifi", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
+  server.on("/savewifi", HTTP_POST, handleSaveWifi);
+  server.on("/savewifi", HTTP_OPTIONS, [](){ handleCors(); server.send(204,"text/plain",""); });
+  server.on("/clearwifi", HTTP_GET, handleClearWifi);
   // CORS preflight catch-all
   server.onNotFound([](){
     if (server.method() == HTTP_OPTIONS) { handleCors(); server.send(204,"text/plain",""); return; }
@@ -297,6 +434,9 @@ void setup() {
 
   server.begin();
   Serial.println("HTTP server started");
+  if (sta_connected) {
+    Serial.printf("✅ AUTO WEBSITE: Use STA IP http://%s/stream in website (same WiFi, no hotspot switching!)\n", WiFi.localIP().toString().c_str());
+  }
 }
 
 void loop() {
